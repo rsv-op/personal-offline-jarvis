@@ -1,0 +1,31 @@
+{
+  "project": "personal-offline-jarvis",
+  "repository": "rsv-op/personal-offline-jarvis",
+  "default_branch": "main",
+  "android_project_root": "jarvis-android/",
+  "checkpoint": "phase-0",
+  "architecture": {
+    "approach": "local-first",
+    "core_memory_location": "on-device",
+    "network_access": "optional and explicitly controlled",
+    "device_interaction": "authorized Android APIs only"
+  },
+  "phases": {
+    "phase_0_repository_state": "in_progress",
+    "phase_1_android_scaffold": "pending",
+    "phase_2_local_memory": "pending",
+    "phase_3_offline_voice": "pending",
+    "phase_4_accessibility": "pending",
+    "phase_5_privileged_executor": "pending",
+    "phase_6_orchestrator_ui": "pending",
+    "phase_7_build_sign_verify": "pending"
+  },
+  "verification": {
+    "source_committed": false,
+    "syntax_validated": false,
+    "unit_tests_passed": false,
+    "apk_built": false,
+    "apk_signature_verified": false
+  },
+  "next_action": "Create the Android Gradle project scaffold and validate the first CI build."
+}
