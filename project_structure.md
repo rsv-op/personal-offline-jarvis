@@ -5,6 +5,9 @@ This repository is a single-module Android application. Kotlin upload wrappers (
 ```text
 .
 ├── .github/workflows/build.yml
+├── docs
+│   ├── BUILD_AND_VALIDATION_GUIDE.md
+│   └── JARVIS_Build_Test_Evaluation_Guide.docx
 ├── app
 │   ├── build.gradle.kts
 │   └── src

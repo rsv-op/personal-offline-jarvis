@@ -42,4 +42,8 @@ Requirements: JDK 21, Android SDK 34, and Gradle 8.14.6. The Android/Kotlin byte
 gradle :app:testDebugUnitTest :app:assembleDebug
 ```
 
-The GitHub Actions workflow runs the same unit-test and debug-APK tasks.
+The GitHub Actions workflow runs the same unit-test and debug-APK tasks and uploads the resulting APK as a downloadable workflow artifact.
+
+## Developer and verification guide
+
+See the [Build, Test, and Evaluation Guide](docs/BUILD_AND_VALIDATION_GUIDE.md) for the implementation overview, configuration calculations, step-by-step build/model setup, automated and on-device test checklists, current limitations, and what remains before production readiness. [Download the Word document](docs/JARVIS_Build_Test_Evaluation_Guide.docx).
