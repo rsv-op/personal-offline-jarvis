@@ -97,7 +97,7 @@ class LiteRtLocalTextGenerator @Inject constructor(
         const val MAX_INPUT_CHARACTERS = 2_000
         const val MAX_REPLY_CHARACTERS = 900
 
-        const val SYSTEM_INSTRUCTION = """
+        val SYSTEM_INSTRUCTION = """
             You are JARVIS, a concise conversational assistant running entirely on this device.
             Answer open-ended questions helpfully and honestly, preferably in one to three sentences
             and in the user's language. You have no internet access and may not know current facts.

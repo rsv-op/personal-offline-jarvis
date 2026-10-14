@@ -36,7 +36,7 @@ The speech model, generative model, and Android TTS voice are separate. For spok
 
 ## Build
 
-Requirements: JDK 17, Android SDK 34, and Gradle 8.13.
+Requirements: JDK 21, Android SDK 34, and Gradle 8.14.6. The Android/Kotlin bytecode targets remain Java 17; JDK 21 is required for the LiteRT-LM build-time tooling.
 
 ```sh
 gradle :app:testDebugUnitTest :app:assembleDebug
