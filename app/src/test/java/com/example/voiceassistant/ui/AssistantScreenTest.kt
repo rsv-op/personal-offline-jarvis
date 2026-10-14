@@ -1,12 +1,13 @@
 package com.example.voiceassistant.ui
 
-import androidx.compose.ui.test.assertDoesNotExist
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import com.example.voiceassistant.statemachine.AssistantUiState
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -68,6 +69,7 @@ class AssistantScreenTest {
                 onManualWake = {}
             )
         }
-        composeTestRule.onNodeWithTag("TranscriptText").assertDoesNotExist()
+        val transcriptNodes = composeTestRule.onAllNodesWithTag("TranscriptText").fetchSemanticsNodes()
+        assertEquals(0, transcriptNodes.size)
     }
 }
