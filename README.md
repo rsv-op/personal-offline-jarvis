@@ -36,7 +36,7 @@ The speech model, generative model, and Android TTS voice are separate. For spok
 
 ## Build
 
-Requirements: JDK 17, Android SDK 34, and Gradle 8.2.1.
+Requirements: JDK 17, Android SDK 34, and Gradle 8.13.0.
 
 ```sh
 gradle :app:testDebugUnitTest :app:assembleDebug
