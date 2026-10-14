@@ -30,7 +30,7 @@ jobs:
             echo '```text' >> "$GITHUB_STEP_SUMMARY"
             tail -n 100 gradle-build.log >> "$GITHUB_STEP_SUMMARY"
             echo '```' >> "$GITHUB_STEP_SUMMARY"
-            grep -E '(^FAILURE:|What went wrong|Exception|Caused by:|Could not|Plugin \[|A problem occurred|^> Task )' gradle-build.log | tail -n 30 | while IFS= read -r line; do
+            grep -iE '(failed|failure|error|exception|what went wrong|caused by|^e: )' gradle-build.log | tail -n 40 | while IFS= read -r line; do
               escaped=$(printf '%s' "$line" | sed 's/%/%25/g; s/\r/%0D/g')
               printf '::error title=Gradle failure::%s\n' "$escaped"
             done
