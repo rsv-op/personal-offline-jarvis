@@ -23,7 +23,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          gradle --no-daemon :app:testDebugUnitTest :app:assembleDebug 2>&1 | tee gradle-build.log
+          gradle --no-daemon --stacktrace :app:testDebugUnitTest :app:assembleDebug 2>&1 | tee gradle-build.log
           gradle_status=${PIPESTATUS[0]}
           if [ "$gradle_status" -ne 0 ]; then
             echo "### Gradle failure excerpt" >> "$GITHUB_STEP_SUMMARY"
