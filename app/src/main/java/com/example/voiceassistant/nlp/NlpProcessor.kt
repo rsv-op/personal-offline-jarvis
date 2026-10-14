@@ -25,8 +25,12 @@ class NlpProcessor(
             else -> false
         }
         val isUnknown = evaluation.intent is AppIntent.UnknownIntent
+        val isDeviceAction = evaluation.intent is AppIntent.ToggleFlashlight ||
+            evaluation.intent is AppIntent.SetAlarm ||
+            evaluation.intent is AppIntent.DeleteFile
         val needsConfirmation = !isUnknown && (
-            evaluation.confidence < confidenceThreshold ||
+            isDeviceAction ||
+                evaluation.confidence < confidenceThreshold ||
                 evaluation.sensitivity == IntentSensitivity.HIGH ||
                 missingParams
             )

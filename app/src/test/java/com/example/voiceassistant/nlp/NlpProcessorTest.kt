@@ -14,7 +14,7 @@ class NlpProcessorTest {
         val result = processor.process("uh please turn on the flashlight")
         assertTrue(result.intent is AppIntent.ToggleFlashlight)
         assertTrue((result.intent as AppIntent.ToggleFlashlight).isOn)
-        assertFalse(result.needsConfirmation)
+        assertTrue(result.needsConfirmation)
     }
 
     @Test
@@ -28,7 +28,7 @@ class NlpProcessorTest {
     fun `spoken time is normalized into alarm time`() = runTest {
         val result = processor.process("wake me up at six thirty am")
         assertEquals(AppIntent.SetAlarm("06:30 am"), result.intent)
-        assertFalse(result.needsConfirmation)
+        assertTrue(result.needsConfirmation)
     }
 
     @Test

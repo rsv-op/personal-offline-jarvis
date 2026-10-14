@@ -7,6 +7,8 @@ import com.example.voiceassistant.execution.TtsController
 import com.example.voiceassistant.nlp.IntentRouter
 import com.example.voiceassistant.nlp.NlpProcessor
 import com.example.voiceassistant.nlp.TextNormalizer
+import com.example.voiceassistant.stt.SttEngine
+import com.example.voiceassistant.stt.VoskSttEngine
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -36,4 +38,8 @@ object AssistantDiModule {
 
     @Provides
     fun provideAlarmExecutor() = AlarmExecutor()
+
+    @Provides
+    @Singleton
+    fun provideSttEngine(): SttEngine = VoskSttEngine()
 }
