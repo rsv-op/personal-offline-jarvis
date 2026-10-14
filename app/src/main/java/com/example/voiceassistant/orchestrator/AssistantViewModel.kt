@@ -8,6 +8,8 @@ import com.example.voiceassistant.execution.AlarmExecutor
 import com.example.voiceassistant.execution.FlashlightExecutor
 import com.example.voiceassistant.execution.TtsController
 import com.example.voiceassistant.execution.TtsEvent
+import com.example.voiceassistant.generation.LocalGenerationModelStore
+import com.example.voiceassistant.generation.LocalTextGenerator
 import com.example.voiceassistant.nlp.AppIntent
 import com.example.voiceassistant.nlp.NlpProcessor
 import com.example.voiceassistant.statemachine.AssistantUiState
@@ -39,7 +41,9 @@ class AssistantViewModel @Inject constructor(
     private val nlpProcessor: NlpProcessor,
     sttEngine: SttEngine,
     private val audioCaptureSource: AudioCaptureSource,
-    private val modelStore: VoskModelStore
+    private val modelStore: VoskModelStore,
+    private val localTextGenerator: LocalTextGenerator,
+    private val localGenerationModelStore: LocalGenerationModelStore
 ) : ViewModel() {
     private val _uiState = MutableStateFlow<AssistantUiState>(AssistantUiState.Idle)
     val uiState: StateFlow<AssistantUiState> = _uiState.asStateFlow()
@@ -55,6 +59,15 @@ class AssistantViewModel @Inject constructor(
         }
     )
     val modelStatus: StateFlow<String> = _modelStatus.asStateFlow()
+
+    private val _replyModelStatus = MutableStateFlow(
+        if (localGenerationModelStore.installedModelPath() == null) {
+            "Local reply model not installed"
+        } else {
+            "Local reply model ready"
+        }
+    )
+    val replyModelStatus: StateFlow<String> = _replyModelStatus.asStateFlow()
 
     private val _statusMessage = MutableStateFlow("")
     val statusMessage: StateFlow<String> = _statusMessage.asStateFlow()
@@ -93,6 +106,8 @@ class AssistantViewModel @Inject constructor(
     }
 
     fun importOfflineModel(treeUri: Uri) {
+        if (_uiState.value !is AssistantUiState.Idle) return
+        _uiState.value = AssistantUiState.Processing
         viewModelScope.launch {
             _modelStatus.value = "Importing offline speech model…"
             _statusMessage.value = ""
@@ -101,9 +116,31 @@ class AssistantViewModel @Inject constructor(
                 loadedModelPath = null
                 _modelStatus.value = "Offline speech model ready"
                 _statusMessage.value = "Model installed. You can now speak offline."
+                _uiState.value = AssistantUiState.Idle
             } catch (error: Exception) {
                 _modelStatus.value = "Offline speech model import failed"
                 _statusMessage.value = error.message ?: "Could not import the selected model"
+                _uiState.value = AssistantUiState.Idle
+            }
+        }
+    }
+
+    fun importReplyModel(uri: Uri) {
+        if (_uiState.value !is AssistantUiState.Idle) return
+        _uiState.value = AssistantUiState.Processing
+        viewModelScope.launch {
+            _replyModelStatus.value = "Importing local reply model…"
+            _statusMessage.value = ""
+            try {
+                localGenerationModelStore.importModel(uri)
+                localTextGenerator.onModelUpdated()
+                _replyModelStatus.value = "Local reply model ready"
+                _statusMessage.value = "Open-ended replies will use the local model on this device."
+                _uiState.value = AssistantUiState.Idle
+            } catch (error: Exception) {
+                _replyModelStatus.value = "Local reply model import failed"
+                _statusMessage.value = error.message ?: "Could not import the selected reply model"
+                _uiState.value = AssistantUiState.Idle
             }
         }
     }
@@ -159,7 +196,10 @@ class AssistantViewModel @Inject constructor(
         }
     }
 
-    fun onIntentParsed(parsed: NlpProcessor.OnIntentParsed) {
+    fun onIntentParsed(
+        parsed: NlpProcessor.OnIntentParsed,
+        originalUtterance: String? = null
+    ) {
         if (parsed.intent is AppIntent.SetAlarm && parsed.intent.time == null) {
             awaitingAlarmTime = true
             pendingIntent = null
@@ -168,7 +208,7 @@ class AssistantViewModel @Inject constructor(
                 if (awaitingAlarmTime) startListening()
             }
         } else if (parsed.intent is AppIntent.UnknownIntent) {
-            viewModelScope.launch { speakAndReturnToIdle("I didn't catch that. Please try again.") }
+            handleOpenEndedRequest(originalUtterance.orEmpty())
         } else if (!parsed.needsConfirmation) {
             executeIntent(parsed.intent)
         } else {
@@ -194,6 +234,34 @@ class AssistantViewModel @Inject constructor(
         viewModelScope.launch { speakAndReturnToIdle("Okay, cancelled.") }
     }
 
+    private fun handleOpenEndedRequest(userText: String) {
+        if (userText.isBlank()) {
+            viewModelScope.launch { speakAndReturnToIdle("I didn't catch that. Please try again.") }
+            return
+        }
+        if (localGenerationModelStore.installedModelPath() == null) {
+            viewModelScope.launch {
+                speakAndReturnToIdle(
+                    "I can answer open-ended questions after you import a local reply model."
+                )
+            }
+            return
+        }
+
+        _uiState.value = AssistantUiState.Processing
+        _statusMessage.value = "Thinking with the on-device model…"
+        viewModelScope.launch {
+            try {
+                val reply = localTextGenerator.generateReply(userText)
+                speakAndReturnToIdle(reply)
+            } catch (error: Exception) {
+                _replyModelStatus.value = "Local reply model could not be loaded"
+                speakAndReturnToIdle("I couldn't load the local reply model. Please check the selected file.")
+                _statusMessage.value = error.message ?: "Local generation failed"
+            }
+        }
+    }
+
     private fun dispatchSttEvent(event: SttEvent) {
         when (event) {
             is SttEvent.OnPartialResult -> viewModelScope.launch {
@@ -213,7 +281,10 @@ class AssistantViewModel @Inject constructor(
                     } else {
                         event.text
                     }
-                    onIntentParsed(nlpProcessor.process(requestText))
+                    onIntentParsed(
+                        parsed = nlpProcessor.process(requestText),
+                        originalUtterance = event.text
+                    )
                 } catch (error: Exception) {
                     _statusMessage.value = error.message ?: "Could not understand the request"
                     _uiState.value = AssistantUiState.Idle

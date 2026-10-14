@@ -48,6 +48,7 @@ dependencies {
     implementation("androidx.documentfile:documentfile:1.0.1")
     implementation("net.java.dev.jna:jna:5.18.1@aar")
     implementation("com.alphacephei:vosk-android:0.3.75@aar")
+    implementation("com.google.ai.edge.litertlm:litertlm-android:0.18.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.6.2")
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.6.2")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.6.2")

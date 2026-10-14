@@ -22,13 +22,26 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.OpenDocumentTree()
     ) { uri ->
         if (uri != null) {
-            runCatching {
-                contentResolver.takePersistableUriPermission(
-                    uri,
-                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
-                )
-            }
+            persistReadPermission(uri)
             viewModel.importOfflineModel(uri)
+        }
+    }
+
+    private val replyModelPicker = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            persistReadPermission(uri)
+            viewModel.importReplyModel(uri)
+        }
+    }
+
+    private fun persistReadPermission(uri: android.net.Uri) {
+        runCatching {
+            contentResolver.takePersistableUriPermission(
+                uri,
+                android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
         }
     }
 
@@ -40,7 +53,8 @@ class MainActivity : ComponentActivity() {
         setContent {
             AssistantApp(
                 viewModel = viewModel,
-                onInstallModel = { modelFolderPicker.launch(null) }
+                onInstallModel = { modelFolderPicker.launch(null) },
+                onInstallReplyModel = { replyModelPicker.launch(arrayOf("*/*")) }
             )
         }
     }

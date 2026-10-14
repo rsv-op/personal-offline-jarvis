@@ -5,6 +5,8 @@ import com.example.voiceassistant.execution.AlarmExecutor
 import com.example.voiceassistant.execution.FlashlightExecutor
 import com.example.voiceassistant.execution.TtsController
 import com.example.voiceassistant.execution.TtsEvent
+import com.example.voiceassistant.generation.LocalGenerationModelStore
+import com.example.voiceassistant.generation.LocalTextGenerator
 import com.example.voiceassistant.nlp.AppIntent
 import com.example.voiceassistant.nlp.NlpProcessor
 import com.example.voiceassistant.statemachine.AssistantUiState
@@ -41,6 +43,8 @@ class AssistantViewModelTest {
     private lateinit var mockAudioCaptureSource: AudioCaptureSource
     private lateinit var mockSttEngine: SttEngine
     private lateinit var mockModelStore: VoskModelStore
+    private lateinit var mockLocalTextGenerator: LocalTextGenerator
+    private lateinit var mockLocalGenerationModelStore: LocalGenerationModelStore
     private lateinit var viewModel: AssistantViewModel
     private lateinit var dispatcher: TestDispatcher
 
@@ -55,6 +59,8 @@ class AssistantViewModelTest {
         mockAudioCaptureSource = mock()
         mockSttEngine = mock()
         mockModelStore = mock()
+        mockLocalTextGenerator = mock()
+        mockLocalGenerationModelStore = mock()
 
         doReturn(MutableSharedFlow<TtsEvent>()).whenever(mockTtsController).events
         doReturn(MutableSharedFlow<ShortArray>()).whenever(mockAudioCaptureSource).frames
@@ -68,7 +74,9 @@ class AssistantViewModelTest {
             nlpProcessor = NlpProcessor(),
             sttEngine = mockSttEngine,
             audioCaptureSource = mockAudioCaptureSource,
-            modelStore = mockModelStore
+            modelStore = mockModelStore,
+            localTextGenerator = mockLocalTextGenerator,
+            localGenerationModelStore = mockLocalGenerationModelStore
         )
     }
 
@@ -84,6 +92,19 @@ class AssistantViewModelTest {
         advanceUntilIdle()
 
         verifyBlocking(mockFlashlightExecutor) { execute(mockContext, intent) }
+        assertEquals(AssistantUiState.Idle, viewModel.uiState.value)
+    }
+
+    @Test
+    fun `unknown request stays offline and asks for a local reply model`() = runTest(dispatcher) {
+        val parsed = NlpProcessor().process("what is the capital of France")
+        viewModel.onIntentParsed(parsed, "what is the capital of France")
+        advanceUntilIdle()
+
+        verifyBlocking(mockLocalTextGenerator, never()) { generateReply(any()) }
+        verifyBlocking(mockTtsController) {
+            speak(eq("I can answer open-ended questions after you import a local reply model."), any())
+        }
         assertEquals(AssistantUiState.Idle, viewModel.uiState.value)
     }
 

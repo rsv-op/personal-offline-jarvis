@@ -17,6 +17,10 @@ This repository is a single-module Android application. Kotlin upload wrappers (
 │       │   │   │   ├── ExecutionCoordinator.kt
 │       │   │   │   ├── IntentExecutors.kt
 │       │   │   │   └── TtsController.kt
+│       │   │   ├── generation
+│       │   │   │   ├── LiteRtLocalTextGenerator.kt
+│       │   │   │   ├── LocalGenerationModelStore.kt
+│       │   │   │   └── LocalTextGenerator.kt
 │       │   │   ├── nlp
 │       │   │   │   ├── AppIntent.kt
 │       │   │   │   ├── IntentRouter.kt
@@ -47,4 +51,4 @@ This repository is a single-module Android application. Kotlin upload wrappers (
 └── settings.gradle.kts
 ```
 
-The original uploads `STT Engine Interface.kt.txt` and `SttEngine.kt.txt` describe the same interface, so they are represented once. The Vosk adapter is wired to the live audio-capture and ViewModel flow; model data is selected/imported by the user and is not stored in Git. `DeleteFile` is part of the intent model for parsing/confirmation only; no destructive file executor is wired into the app.
+The original uploads `STT Engine Interface.kt.txt` and `SttEngine.kt.txt` describe the same interface, so they are represented once. The Vosk and LiteRT-LM adapters are wired to the live ViewModel flow; both large model files are selected/imported by the user and are not stored in Git. The generative adapter handles only open-ended replies and has no device-action tools. `DeleteFile` is part of the intent model for parsing/confirmation only; no destructive file executor is wired into the app.

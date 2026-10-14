@@ -43,11 +43,13 @@ import com.example.voiceassistant.statemachine.AssistantUiState
 @Composable
 fun AssistantApp(
     viewModel: AssistantViewModel,
-    onInstallModel: () -> Unit
+    onInstallModel: () -> Unit,
+    onInstallReplyModel: () -> Unit
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val transcript by viewModel.partialTranscript.collectAsStateWithLifecycle()
     val modelStatus by viewModel.modelStatus.collectAsStateWithLifecycle()
+    val replyModelStatus by viewModel.replyModelStatus.collectAsStateWithLifecycle()
     val statusMessage by viewModel.statusMessage.collectAsStateWithLifecycle()
 
     MaterialTheme {
@@ -58,8 +60,10 @@ fun AssistantApp(
             onDeny = viewModel::denyAction,
             onManualWake = viewModel::toggleListening,
             modelStatus = modelStatus,
+            replyModelStatus = replyModelStatus,
             statusMessage = statusMessage,
-            onInstallModel = onInstallModel
+            onInstallModel = onInstallModel,
+            onInstallReplyModel = onInstallReplyModel
         )
     }
 }
@@ -72,8 +76,10 @@ fun AssistantScreen(
     onDeny: () -> Unit,
     onManualWake: () -> Unit,
     modelStatus: String = "",
+    replyModelStatus: String = "",
     statusMessage: String = "",
-    onInstallModel: () -> Unit = {}
+    onInstallModel: () -> Unit = {},
+    onInstallReplyModel: () -> Unit = {}
 ) {
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(
@@ -112,6 +118,28 @@ fun AssistantScreen(
                 modifier = Modifier.testTag("InstallModelButton")
             ) {
                 Text(if (modelStatus.contains("ready", ignoreCase = true)) "Change speech model" else "Import speech model folder")
+            }
+            if (replyModelStatus.isNotBlank()) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = replyModelStatus,
+                    style = MaterialTheme.typography.bodyMedium,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().testTag("ReplyModelStatusText")
+                )
+            }
+            OutlinedButton(
+                onClick = onInstallReplyModel,
+                enabled = uiState is AssistantUiState.Idle,
+                modifier = Modifier.testTag("InstallReplyModelButton")
+            ) {
+                Text(
+                    if (replyModelStatus.contains("ready", ignoreCase = true)) {
+                        "Change reply model"
+                    } else {
+                        "Import local reply model"
+                    }
+                )
             }
 
             Spacer(modifier = Modifier.height(24.dp))
