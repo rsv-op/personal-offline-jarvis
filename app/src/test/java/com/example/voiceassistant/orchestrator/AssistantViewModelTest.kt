@@ -23,6 +23,7 @@ import org.junit.Before
 import org.junit.Test
 import org.mockito.kotlin.any
 import org.mockito.kotlin.doReturn
+import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.never
 import org.mockito.kotlin.verifyBlocking
@@ -77,7 +78,7 @@ class AssistantViewModelTest {
         advanceUntilIdle()
 
         verifyBlocking(mockTtsController) {
-            speak("Do you want me to proceed with this action?", any())
+            speak(eq("Do you want me to proceed with this action?"), any())
         }
         verifyBlocking(mockAlarmExecutor, never()) { execute(mockContext, intent) }
         assertEquals(AssistantUiState.NeedsConfirmation, viewModel.uiState.value)
