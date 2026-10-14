@@ -4,9 +4,14 @@ import android.content.Context
 import com.example.voiceassistant.execution.AlarmExecutor
 import com.example.voiceassistant.execution.FlashlightExecutor
 import com.example.voiceassistant.execution.TtsController
+import com.example.voiceassistant.generation.LiteRtLocalTextGenerator
+import com.example.voiceassistant.generation.LocalTextGenerator
+import com.example.voiceassistant.generation.LocalGenerationModelStore
 import com.example.voiceassistant.nlp.IntentRouter
 import com.example.voiceassistant.nlp.NlpProcessor
 import com.example.voiceassistant.nlp.TextNormalizer
+import com.example.voiceassistant.stt.SttEngine
+import com.example.voiceassistant.stt.VoskSttEngine
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -36,4 +41,15 @@ object AssistantDiModule {
 
     @Provides
     fun provideAlarmExecutor() = AlarmExecutor()
+
+    @Provides
+    @Singleton
+    fun provideSttEngine(): SttEngine = VoskSttEngine()
+
+    @Provides
+    @Singleton
+    fun provideLocalTextGenerator(
+        @ApplicationContext context: Context,
+        modelStore: LocalGenerationModelStore
+    ): LocalTextGenerator = LiteRtLocalTextGenerator(context, modelStore)
 }

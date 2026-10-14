@@ -41,9 +41,16 @@ import com.example.voiceassistant.orchestrator.AssistantViewModel
 import com.example.voiceassistant.statemachine.AssistantUiState
 
 @Composable
-fun AssistantApp(viewModel: AssistantViewModel) {
+fun AssistantApp(
+    viewModel: AssistantViewModel,
+    onInstallModel: () -> Unit,
+    onInstallReplyModel: () -> Unit
+) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val transcript by viewModel.partialTranscript.collectAsStateWithLifecycle()
+    val modelStatus by viewModel.modelStatus.collectAsStateWithLifecycle()
+    val replyModelStatus by viewModel.replyModelStatus.collectAsStateWithLifecycle()
+    val statusMessage by viewModel.statusMessage.collectAsStateWithLifecycle()
 
     MaterialTheme {
         AssistantScreen(
@@ -51,7 +58,12 @@ fun AssistantApp(viewModel: AssistantViewModel) {
             transcript = transcript,
             onConfirm = viewModel::confirmAction,
             onDeny = viewModel::denyAction,
-            onManualWake = { /* A wake trigger can be connected here. */ }
+            onManualWake = viewModel::toggleListening,
+            modelStatus = modelStatus,
+            replyModelStatus = replyModelStatus,
+            statusMessage = statusMessage,
+            onInstallModel = onInstallModel,
+            onInstallReplyModel = onInstallReplyModel
         )
     }
 }
@@ -62,7 +74,12 @@ fun AssistantScreen(
     transcript: String,
     onConfirm: () -> Unit,
     onDeny: () -> Unit,
-    onManualWake: () -> Unit
+    onManualWake: () -> Unit,
+    modelStatus: String = "",
+    replyModelStatus: String = "",
+    statusMessage: String = "",
+    onInstallModel: () -> Unit = {},
+    onInstallReplyModel: () -> Unit = {}
 ) {
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(
@@ -76,7 +93,56 @@ fun AssistantScreen(
                 modifier = Modifier.testTag("StatusText")
             )
 
-            Spacer(modifier = Modifier.height(48.dp))
+            if (modelStatus.isNotBlank()) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = modelStatus,
+                    style = MaterialTheme.typography.bodyMedium,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().testTag("ModelStatusText")
+                )
+            }
+            if (statusMessage.isNotBlank()) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = statusMessage,
+                    style = MaterialTheme.typography.bodySmall,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().testTag("AssistantMessage")
+                )
+            }
+            Spacer(modifier = Modifier.height(12.dp))
+            OutlinedButton(
+                onClick = onInstallModel,
+                enabled = uiState is AssistantUiState.Idle,
+                modifier = Modifier.testTag("InstallModelButton")
+            ) {
+                Text(if (modelStatus.contains("ready", ignoreCase = true)) "Change speech model" else "Import speech model folder")
+            }
+            if (replyModelStatus.isNotBlank()) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = replyModelStatus,
+                    style = MaterialTheme.typography.bodyMedium,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().testTag("ReplyModelStatusText")
+                )
+            }
+            OutlinedButton(
+                onClick = onInstallReplyModel,
+                enabled = uiState is AssistantUiState.Idle,
+                modifier = Modifier.testTag("InstallReplyModelButton")
+            ) {
+                Text(
+                    if (replyModelStatus.contains("ready", ignoreCase = true)) {
+                        "Change reply model"
+                    } else {
+                        "Import local reply model"
+                    }
+                )
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
             AssistantOrb(uiState = uiState, onClick = onManualWake)
             Spacer(modifier = Modifier.height(48.dp))
 
@@ -143,10 +209,10 @@ fun AssistantOrb(uiState: AssistantUiState, onClick: () -> Unit) {
 }
 
 private fun mapStatusText(state: AssistantUiState): String = when (state) {
-    AssistantUiState.Idle -> "Tap or say wake word"
+    AssistantUiState.Idle -> "Tap the orb to speak"
     AssistantUiState.WakeDetected -> "Wake word detected"
-    AssistantUiState.Listening -> "Listening..."
-    AssistantUiState.Processing -> "Thinking..."
+    AssistantUiState.Listening -> "Listening offline — tap to stop"
+    AssistantUiState.Processing -> "Processing offline..."
     AssistantUiState.NeedsConfirmation -> "Confirm action?"
     AssistantUiState.Executing -> "Executing..."
     AssistantUiState.Speaking -> "Speaking..."

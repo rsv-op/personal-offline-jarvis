@@ -33,7 +33,7 @@ class AssistantScreenTest {
             )
         }
 
-        composeTestRule.onNodeWithTag("StatusText").assertTextEquals("Listening...")
+        composeTestRule.onNodeWithTag("StatusText").assertTextEquals("Listening offline — tap to stop")
         composeTestRule.onNodeWithTag("AssistantOrb").assertIsDisplayed()
         composeTestRule.onNodeWithTag("TranscriptText").assertIsDisplayed().assertTextEquals("hello")
     }

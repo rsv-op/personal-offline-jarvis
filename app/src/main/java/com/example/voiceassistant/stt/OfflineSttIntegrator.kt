@@ -10,6 +10,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicBoolean
 
 class OfflineSttIntegrator(
@@ -17,7 +18,7 @@ class OfflineSttIntegrator(
     private val audioStream: SharedFlow<ShortArray>,
     private val frameRecycler: (ShortArray) -> Unit,
     private val eventDispatcher: (SttEvent) -> Unit,
-    dispatcher: CoroutineDispatcher = Dispatchers.Default
+    private val dispatcher: CoroutineDispatcher = Dispatchers.Default
 ) {
     private val scope = CoroutineScope(dispatcher + SupervisorJob())
     private var transcriptionJob: Job? = null
@@ -25,15 +26,19 @@ class OfflineSttIntegrator(
     private val isTranscribing = AtomicBoolean(false)
 
     fun loadModel(modelPath: String) {
-        scope.launch {
-            try {
-                engine.initialize(modelPath)
-                isInitialized.set(true)
-            } catch (e: Exception) {
-                eventDispatcher(SttEvent.OnError(
-                    Exception("Failed to initialize STT model: ${e.message}", e)
-                ))
-            }
+        scope.launch { initializeModel(modelPath) }
+    }
+
+    suspend fun initializeModel(modelPath: String): Boolean = withContext(dispatcher) {
+        try {
+            engine.initialize(modelPath)
+            isInitialized.set(true)
+            true
+        } catch (e: Exception) {
+            eventDispatcher(SttEvent.OnError(
+                Exception("Failed to initialize STT model: ${e.message}", e)
+            ))
+            false
         }
     }
 
@@ -71,13 +76,13 @@ class OfflineSttIntegrator(
         }
     }
 
-    fun stopTranscription() {
+    fun stopTranscription(emitFinalResult: Boolean = true) {
         if (!isTranscribing.getAndSet(false)) return
         val activeJob = transcriptionJob
         activeJob?.cancel()
         scope.launch {
             activeJob?.join()
-            emitFinalAndReset()
+            if (emitFinalResult) emitFinalAndReset() else engine.reset()
         }
     }
 
@@ -92,9 +97,14 @@ class OfflineSttIntegrator(
     }
 
     fun releaseModel() {
-        stopTranscription()
-        engine.release()
-        isInitialized.set(false)
-        scope.cancel()
+        isTranscribing.set(false)
+        val activeJob = transcriptionJob
+        activeJob?.cancel()
+        scope.launch {
+            activeJob?.join()
+            engine.release()
+            isInitialized.set(false)
+            scope.cancel()
+        }
     }
 }

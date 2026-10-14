@@ -15,9 +15,24 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-      - name: Set up Gradle 8.2.1
+      - name: Set up Gradle 8.13
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: 8.2.1
+          gradle-version: 8.13
       - name: Run unit tests and assemble debug APK
-        run: gradle --no-daemon :app:testDebugUnitTest :app:assembleDebug
+        shell: bash
+        run: |
+          set +e
+          gradle --no-daemon --stacktrace :app:testDebugUnitTest :app:assembleDebug 2>&1 | tee gradle-build.log
+          gradle_status=${PIPESTATUS[0]}
+          if [ "$gradle_status" -ne 0 ]; then
+            echo "### Gradle failure excerpt" >> "$GITHUB_STEP_SUMMARY"
+            echo '```text' >> "$GITHUB_STEP_SUMMARY"
+            tail -n 100 gradle-build.log >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            grep -iE '(failed|failure|error|exception|what went wrong|caused by|^e: )' gradle-build.log | tail -n 40 | while IFS= read -r line; do
+              escaped=$(printf '%s' "$line" | sed 's/%/%25/g; s/\r/%0D/g')
+              printf '::error title=Gradle failure::%s\n' "$escaped"
+            done
+          fi
+          exit "$gradle_status"

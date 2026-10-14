@@ -5,9 +5,14 @@ import com.example.voiceassistant.execution.AlarmExecutor
 import com.example.voiceassistant.execution.FlashlightExecutor
 import com.example.voiceassistant.execution.TtsController
 import com.example.voiceassistant.execution.TtsEvent
+import com.example.voiceassistant.generation.LocalGenerationModelStore
+import com.example.voiceassistant.generation.LocalTextGenerator
 import com.example.voiceassistant.nlp.AppIntent
 import com.example.voiceassistant.nlp.NlpProcessor
 import com.example.voiceassistant.statemachine.AssistantUiState
+import com.example.voiceassistant.stt.AudioCaptureSource
+import com.example.voiceassistant.stt.SttEngine
+import com.example.voiceassistant.stt.VoskModelStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -35,6 +40,11 @@ class AssistantViewModelTest {
     private lateinit var mockTtsController: TtsController
     private lateinit var mockFlashlightExecutor: FlashlightExecutor
     private lateinit var mockAlarmExecutor: AlarmExecutor
+    private lateinit var mockAudioCaptureSource: AudioCaptureSource
+    private lateinit var mockSttEngine: SttEngine
+    private lateinit var mockModelStore: VoskModelStore
+    private lateinit var mockLocalTextGenerator: LocalTextGenerator
+    private lateinit var mockLocalGenerationModelStore: LocalGenerationModelStore
     private lateinit var viewModel: AssistantViewModel
     private lateinit var dispatcher: TestDispatcher
 
@@ -46,13 +56,27 @@ class AssistantViewModelTest {
         mockTtsController = mock()
         mockFlashlightExecutor = mock()
         mockAlarmExecutor = mock()
+        mockAudioCaptureSource = mock()
+        mockSttEngine = mock()
+        mockModelStore = mock()
+        mockLocalTextGenerator = mock()
+        mockLocalGenerationModelStore = mock()
+
         doReturn(MutableSharedFlow<TtsEvent>()).whenever(mockTtsController).events
+        doReturn(MutableSharedFlow<ShortArray>()).whenever(mockAudioCaptureSource).frames
+        doReturn(MutableSharedFlow<Throwable>()).whenever(mockAudioCaptureSource).errors
 
         viewModel = AssistantViewModel(
             context = mockContext,
             ttsController = mockTtsController,
             flashlightExecutor = mockFlashlightExecutor,
-            alarmExecutor = mockAlarmExecutor
+            alarmExecutor = mockAlarmExecutor,
+            nlpProcessor = NlpProcessor(),
+            sttEngine = mockSttEngine,
+            audioCaptureSource = mockAudioCaptureSource,
+            modelStore = mockModelStore,
+            localTextGenerator = mockLocalTextGenerator,
+            localGenerationModelStore = mockLocalGenerationModelStore
         )
     }
 
@@ -72,16 +96,41 @@ class AssistantViewModelTest {
     }
 
     @Test
-    fun `confirmation request stores intent and speaks prompt`() = runTest(dispatcher) {
+    fun `unknown request stays offline and asks for a local reply model`() = runTest(dispatcher) {
+        val parsed = NlpProcessor().process("what is the capital of France")
+        viewModel.onIntentParsed(parsed, "what is the capital of France")
+        advanceUntilIdle()
+
+        verifyBlocking(mockLocalTextGenerator, never()) { generateReply(any()) }
+        verifyBlocking(mockTtsController) {
+            speak(eq("I can answer open-ended questions after you import a local reply model."), any())
+        }
+        assertEquals(AssistantUiState.Idle, viewModel.uiState.value)
+    }
+
+    @Test
+    fun `recognized device action is confirmation gated`() = runTest(dispatcher) {
+        val parsed = NlpProcessor().process("turn on flashlight")
+        viewModel.onIntentParsed(parsed)
+        advanceUntilIdle()
+
+        verifyBlocking(mockFlashlightExecutor, never()) {
+            execute(mockContext, AppIntent.ToggleFlashlight(true))
+        }
+        assertEquals(AssistantUiState.NeedsConfirmation, viewModel.uiState.value)
+    }
+
+    @Test
+    fun `alarm without a time asks a follow-up instead of executing`() = runTest(dispatcher) {
         val intent = AppIntent.SetAlarm(null)
         viewModel.onIntentParsed(NlpProcessor.OnIntentParsed(intent, true, 0.4f))
         advanceUntilIdle()
 
         verifyBlocking(mockTtsController) {
-            speak(eq("Do you want me to proceed with this action?"), any())
+            speak(eq("What time would you like to set the alarm for?"), any())
         }
         verifyBlocking(mockAlarmExecutor, never()) { execute(mockContext, intent) }
-        assertEquals(AssistantUiState.NeedsConfirmation, viewModel.uiState.value)
+        assertEquals(AssistantUiState.Idle, viewModel.uiState.value)
     }
 
     @Test

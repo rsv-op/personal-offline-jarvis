@@ -16,7 +16,34 @@ class MainActivity : ComponentActivity() {
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { /* Permission-denial UX can be added when microphone/camera actions are wired. */ }
+    ) { /* The view model reports microphone permission errors if access is denied. */ }
+
+    private val modelFolderPicker = registerForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri != null) {
+            persistReadPermission(uri)
+            viewModel.importOfflineModel(uri)
+        }
+    }
+
+    private val replyModelPicker = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            persistReadPermission(uri)
+            viewModel.importReplyModel(uri)
+        }
+    }
+
+    private fun persistReadPermission(uri: android.net.Uri) {
+        runCatching {
+            contentResolver.takePersistableUriPermission(
+                uri,
+                android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -24,7 +51,11 @@ class MainActivity : ComponentActivity() {
             arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA)
         )
         setContent {
-            AssistantApp(viewModel = viewModel)
+            AssistantApp(
+                viewModel = viewModel,
+                onInstallModel = { modelFolderPicker.launch(null) },
+                onInstallReplyModel = { replyModelPicker.launch(arrayOf("*/*")) }
+            )
         }
     }
 }
