@@ -1,4 +1,4 @@
-# Personal Offline JARVIS (Android)
+# JARVIS — Local-First Android Assistant
 
 A local-first Android voice-assistant foundation with Compose UI, a small intent parser, text-to-speech support, and an offline speech-recognition integration interface.
 
