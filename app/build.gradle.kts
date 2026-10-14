@@ -63,6 +63,8 @@ dependencies {
 
     implementation("com.google.dagger:hilt-android:2.57.2")
     kapt("com.google.dagger:hilt-android-compiler:2.57.2")
+    // Keep Hilt's processor classpath compatible with Kotlin 2.4 metadata.
+    kapt("org.jetbrains.kotlin:kotlin-metadata-jvm:2.4.21")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3")
