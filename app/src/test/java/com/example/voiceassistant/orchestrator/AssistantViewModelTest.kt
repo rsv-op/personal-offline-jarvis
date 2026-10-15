@@ -23,6 +23,9 @@ import com.example.voiceassistant.stt.VoskModelStore
 import com.example.voiceassistant.vault.JarvisMemory
 import com.example.voiceassistant.vault.SecureVault
 import com.example.voiceassistant.vault.SoftwareVaultCipher
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.ViewModelStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -75,6 +78,7 @@ class AssistantViewModelTest {
     private lateinit var viewModel: AssistantViewModel
     private lateinit var dispatcher: TestDispatcher
     private lateinit var frames: MutableSharedFlow<ShortArray>
+    private val viewModelStore = ViewModelStore()
 
     private class FakeModelSource(private val classifier: AiMatrixClassifier?) : IntentModelSource {
         override var lastError: String? = null
@@ -105,9 +109,13 @@ class AssistantViewModelTest {
         doReturn("/model").whenever(mockModelStore).installedModelPath()
         doReturn(40.0).whenever(mockModelStore).installedModelSizeMb()
         doReturn(null).whenever(mockLocalGenerationModelStore).installedModelPath()
+        runBlocking {
+            whenever(mockSttEngine.getPartialText()).thenReturn("")
+            whenever(mockSttEngine.getFinalText()).thenReturn("")
+        }
 
         val vault = SecureVault(File(temporaryFolder.root, "vault"), SoftwareVaultCipher())
-        memory = JarvisMemory(vault)
+        memory = JarvisMemory(vault).apply { ioDispatcher = dispatcher }
         val classifier = AiMatrixClassifier.fromJson(TestFiles.aiMatrixAsset().readText())
         brain = OnDeviceBrain(FakeModelSource(classifier), memory)
 
@@ -118,7 +126,14 @@ class AssistantViewModelTest {
             whenever(mockStatusExecutor.execute(any(), any())).thenReturn("Battery is 80 percent.")
         }
 
-        viewModel = AssistantViewModel(
+        viewModel = createViewModel()
+    }
+
+    /** Builds the view model through a store so it can be cleared in tearDown. */
+    private fun createViewModel(): AssistantViewModel {
+        val factory = object : ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST")
+            override fun <T : ViewModel> create(modelClass: Class<T>): T = AssistantViewModel(
             context = mockContext,
             ttsController = mockTtsController,
             flashlightExecutor = mockFlashlightExecutor,
@@ -139,11 +154,16 @@ class AssistantViewModelTest {
             brain = brain,
             memory = memory,
             speechDispatcher = dispatcher
-        )
+        ) as T
+        }
+        return ViewModelProvider(viewModelStore, factory)[AssistantViewModel::class.java]
     }
 
     @After
     fun tearDown() {
+        // Clearing the store cancels viewModelScope, so no coroutine from this test can
+        // leak into the next one (which kotlinx-coroutines-test reports as a failure).
+        viewModelStore.clear()
         Dispatchers.resetMain()
     }
 

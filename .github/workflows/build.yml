@@ -88,20 +88,41 @@ jobs:
           set -o pipefail
           gradle --no-daemon --stacktrace :app:testDebugUnitTest :app:assembleDebug 2>&1 | tee /tmp/gradle.log
 
-      - name: Surface the failure as a check annotation
-        # Gradle logs live behind a storage URL that some tooling cannot read; this step
-        # republishes the useful lines (and the JUnit failure messages) as annotations.
+      - name: Surface failures as check annotations
+        # Gradle logs and artifacts live behind signed storage URLs that cannot always be
+        # read back, so the useful lines are republished as check-run annotations. A single
+        # annotation is capped at ~4 KB, hence one annotation per failing test class.
         if: failure()
         run: |
           python3 - <<'PY'
           import pathlib
           import re
-          import sys
           import xml.etree.ElementTree as ET
 
-          digest = []
+          LIMIT = 3900
 
+          def emit(title, lines):
+              if not lines:
+                  return
+              text = "\n".join(lines)[:LIMIT]
+              escaped = text.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+              print(f"::error title={title}::{escaped}")
+
+          # 1) Compiler and Gradle errors.
+          log = pathlib.Path("/tmp/gradle.log")
+          if log.is_file():
+              pattern = re.compile(
+                  r"(^e: |^> Task .*FAILED|error:|Execution failed|Caused by:|Unresolved reference|"
+                  r"Could not (resolve|find)|is not a function|^\* What went wrong)"
+              )
+              emit(
+                  "Gradle failure digest",
+                  [line for line in log.read_text(errors="replace").splitlines() if pattern.search(line)],
+              )
+
+          # 2) Test failures, grouped by class.
           results = pathlib.Path("app/build/test-results/testDebugUnitTest")
+          by_class = {}
           if results.is_dir():
               for report in sorted(results.glob("*.xml")):
                   try:
@@ -109,27 +130,22 @@ jobs:
                   except Exception:
                       continue
                   for case in tree.iter("testcase"):
-                      for problem in list(case.findall("failure")) + list(case.findall("error")):
-                          digest.append(f"{case.get('classname')}.{case.get('name')}: {problem.get('message')}")
+                      problems = list(case.findall("failure")) + list(case.findall("error"))
+                      if not problems:
+                          continue
+                      name = f"{case.get('classname')}.{case.get('name')}"
+                      detail = [name]
+                      for problem in problems:
+                          message = (problem.get("message") or problem.get("type") or "failed").strip()
+                          detail.append("  " + message.replace("\n", " ")[:600])
                           body = (problem.text or "").strip().splitlines()
-                          digest.extend(line.strip() for line in body[:4])
+                          detail.extend("    " + line.strip()[:200] for line in body[1:4])
+                      by_class.setdefault(report.stem, []).extend(detail)
 
-          log = pathlib.Path("/tmp/gradle.log")
-          if log.is_file():
-              pattern = re.compile(
-                  r"(^e: |^> Task .*FAILED|error: |error\[|Execution failed|Caused by|"
-                  r"Unresolved reference|Could not resolve|Could not find |is not a function)"
-              )
-              digest.extend(
-                  line for line in log.read_text(errors="replace").splitlines() if pattern.search(line)
-              )
-
-          if not digest:
-              digest = ["Gradle failed; no digest could be extracted."]
-
-          text = "\n".join(digest)[:20000]
-          escaped = text.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
-          print(f"::error title=Gradle failure digest::{escaped}")
+          for index, (cls, lines) in enumerate(sorted(by_class.items())):
+              if index >= 12:
+                  break
+              emit(f"Test failures {cls[:80]}", lines)
           PY
 
       - name: Collect build outputs
@@ -139,6 +155,8 @@ jobs:
           ls -lh build-outputs
 
       - name: Upload the APK
+        # `always()` so a failing test run still hands over the reports.
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: personal-offline-jarvis-apk

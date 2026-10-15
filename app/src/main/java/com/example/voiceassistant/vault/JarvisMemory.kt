@@ -1,5 +1,6 @@
 package com.example.voiceassistant.vault
 
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -30,6 +31,12 @@ class JarvisMemory @Inject constructor(
      */
     internal var clock: () -> Long = System::currentTimeMillis
 
+    /**
+     * Dispatcher for vault IO. Injectable so tests can drive memory reads/writes with a
+     * test dispatcher (virtual time) instead of real threads.
+     */
+    internal var ioDispatcher: CoroutineDispatcher = Dispatchers.IO
+
     data class TaughtExample(val phrase: String, val label: String, val taughtAt: Long)
 
     data class ActionRecord(
@@ -48,7 +55,7 @@ class JarvisMemory @Inject constructor(
 
     private val mutex = Mutex()
 
-    suspend fun summary(): Summary = withContext(Dispatchers.IO) {
+    suspend fun summary(): Summary = withContext(ioDispatcher) {
         mutex.withLock {
             val document = load()
             Summary(
@@ -60,12 +67,12 @@ class JarvisMemory @Inject constructor(
         }
     }
 
-    suspend fun examples(): List<TaughtExample> = withContext(Dispatchers.IO) {
+    suspend fun examples(): List<TaughtExample> = withContext(ioDispatcher) {
         mutex.withLock { readExamples(load()) }
     }
 
     /** Stores (or replaces) a phrase→label pair. Returns the stored example. */
-    suspend fun teach(phrase: String, label: String): TaughtExample = withContext(Dispatchers.IO) {
+    suspend fun teach(phrase: String, label: String): TaughtExample = withContext(ioDispatcher) {
         val clean = phrase.trim()
         require(clean.isNotEmpty()) { "A taught phrase cannot be empty" }
         require(label.isNotBlank()) { "A taught phrase needs an action" }
@@ -81,7 +88,7 @@ class JarvisMemory @Inject constructor(
         }
     }
 
-    suspend fun forget(phrase: String): Boolean = withContext(Dispatchers.IO) {
+    suspend fun forget(phrase: String): Boolean = withContext(ioDispatcher) {
         mutex.withLock {
             val document = load()
             val examples = readExamples(document)
@@ -96,7 +103,7 @@ class JarvisMemory @Inject constructor(
         }
     }
 
-    suspend fun forgetAll(): Unit = withContext(Dispatchers.IO) {
+    suspend fun forgetAll(): Unit = withContext(ioDispatcher) {
         mutex.withLock {
             val document = load()
             writeExamples(document, emptyList())
@@ -104,7 +111,7 @@ class JarvisMemory @Inject constructor(
         }
     }
 
-    suspend fun remember(key: String, value: String) = withContext(Dispatchers.IO) {
+    suspend fun remember(key: String, value: String) = withContext(ioDispatcher) {
         mutex.withLock {
             val document = load()
             val facts = document.optJSONObject(KEY_FACTS) ?: JSONObject()
@@ -114,11 +121,11 @@ class JarvisMemory @Inject constructor(
         }
     }
 
-    suspend fun recall(key: String): String? = withContext(Dispatchers.IO) {
+    suspend fun recall(key: String): String? = withContext(ioDispatcher) {
         mutex.withLock { load().optJSONObject(KEY_FACTS)?.optString(key)?.takeIf(String::isNotEmpty) }
     }
 
-    suspend fun preferences(): Map<String, String> = withContext(Dispatchers.IO) {
+    suspend fun preferences(): Map<String, String> = withContext(ioDispatcher) {
         mutex.withLock {
             val facts = load().optJSONObject(KEY_FACTS) ?: return@withLock emptyMap()
             facts.keys().asSequence().associateWith { key -> facts.optString(key) }
@@ -127,7 +134,7 @@ class JarvisMemory @Inject constructor(
 
     /** Records what the assistant did. The log is capped so it cannot grow forever. */
     suspend fun logAction(label: String, utterance: String, outcome: String) =
-        withContext(Dispatchers.IO) {
+        withContext(ioDispatcher) {
             mutex.withLock {
                 val document = load()
                 val existing = document.optJSONArray(KEY_ACTIONS) ?: JSONArray()
@@ -147,7 +154,7 @@ class JarvisMemory @Inject constructor(
             }
         }
 
-    suspend fun recentActions(limit: Int = 10): List<ActionRecord> = withContext(Dispatchers.IO) {
+    suspend fun recentActions(limit: Int = 10): List<ActionRecord> = withContext(ioDispatcher) {
         mutex.withLock {
             val actions = load().optJSONArray(KEY_ACTIONS) ?: return@withLock emptyList()
             (0 until minOf(limit, actions.length())).map { index ->
