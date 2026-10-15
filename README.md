@@ -123,6 +123,15 @@ Python suite, then the Kotlin unit tests and the APK build. Builds on `main`, ta
 manual runs additionally publish the APK to the `jarvis-latest` release, and the debug
 keystore is cached so each new APK installs over the previous one.
 
+### Developer and verification guide
+
+The [Build, Test, and Evaluation Guide](docs/BUILD_AND_VALIDATION_GUIDE.md) covers the
+implementation map, the arithmetic behind the audio framing and routing thresholds, the
+build/model setup, the on-device acceptance checklist, and how to measure WER, intent
+accuracy, task success, safety and latency. A Word copy of the same document is generated
+from it with `python docs/tools/build_guide_docx.py`:
+[`docs/JARVIS_Build_Test_Evaluation_Guide.docx`](docs/JARVIS_Build_Test_Evaluation_Guide.docx).
+
 Before the APK is uploaded, CI opens it and proves it is the offline assistant: package
 `com.example.voiceassistant`, `minSdk 26 → targetSdk 36`, `arm64-v8a` native code, the
 ai-matrix asset inside the archive, a valid signature, and **no `INTERNET` permission**. The
