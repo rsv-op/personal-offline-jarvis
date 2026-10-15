@@ -72,8 +72,8 @@ class AssistantViewModel @Inject constructor(
     private val localGenerationModelStore: LocalGenerationModelStore,
     private val brain: OnDeviceBrain,
     private val memory: JarvisMemory,
-    @SpeechDispatcher private val speechDispatcher: kotlinx.coroutines.CoroutineDispatcher =
-        kotlinx.coroutines.Dispatchers.Default
+    /** Injected (never defaulted) so Dagger sees a single, fully-specified constructor. */
+    @SpeechDispatcher private val speechDispatcher: kotlinx.coroutines.CoroutineDispatcher
 ) : ViewModel() {
 
     private val machine = AssistantUiStateMachine()
@@ -461,7 +461,8 @@ class AssistantViewModel @Inject constructor(
                 is AppIntent.ToggleFlashlight -> flashlightExecutor.execute(context, intent)
                 is AppIntent.SetAlarm -> alarmExecutor.execute(context, intent)
                 is AppIntent.SetTimer -> timerExecutor.execute(context, intent)
-                AppIntent.StatusReport -> statusExecutor.execute(context, intent)
+                // Object literals do not smart-cast the subject, so name the singleton.
+                AppIntent.StatusReport -> statusExecutor.execute(context, AppIntent.StatusReport)
                 is AppIntent.DeleteFile ->
                     "File deletion is not available in this build, so nothing was deleted."
                 AppIntent.UnknownIntent -> "I didn't catch that."

@@ -88,7 +88,7 @@ class VoskModelStore @Inject constructor(
 
     // ------------------------------------------------------------------ install
 
-    private fun install(modelRoot: File) {
+    private fun install(modelRoot: File): String {
         val replacement = File(modelsDirectory, "vosk-model-new")
         replacement.deleteRecursively()
         modelRoot.copyRecursively(replacement, overwrite = true)
@@ -104,6 +104,7 @@ class VoskModelStore @Inject constructor(
             error("Could not install the selected model")
         }
         backup.deleteRecursively()
+        return installedDirectory.absolutePath
     }
 
     private fun prepareStaging() {
