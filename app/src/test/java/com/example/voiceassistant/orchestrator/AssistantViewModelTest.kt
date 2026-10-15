@@ -137,7 +137,8 @@ class AssistantViewModelTest {
             localTextGenerator = mockLocalTextGenerator,
             localGenerationModelStore = mockLocalGenerationModelStore,
             brain = brain,
-            memory = memory
+            memory = memory,
+            speechDispatcher = dispatcher
         )
     }
 

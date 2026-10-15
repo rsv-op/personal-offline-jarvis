@@ -29,7 +29,16 @@ import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import java.io.File
+import javax.inject.Qualifier
 import javax.inject.Singleton
+
+/**
+ * Dispatcher used by the speech-recognition pipeline. Exposed as a qualifier so tests
+ * can drive transcription with a deterministic test dispatcher instead of a real thread.
+ */
+@Qualifier
+@Retention(AnnotationRetention.BINARY)
+annotation class SpeechDispatcher
 
 @Module
 @InstallIn(SingletonComponent::class)
@@ -68,6 +77,11 @@ object AssistantDiModule {
     @Provides
     @Singleton
     fun provideSttEngine(): SttEngine = VoskSttEngine()
+
+    @Provides
+    @SpeechDispatcher
+    fun provideSpeechDispatcher(): kotlinx.coroutines.CoroutineDispatcher =
+        kotlinx.coroutines.Dispatchers.Default
 
     @Provides
     @Singleton

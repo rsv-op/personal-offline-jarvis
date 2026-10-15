@@ -71,7 +71,9 @@ class AssistantViewModel @Inject constructor(
     private val localTextGenerator: LocalTextGenerator,
     private val localGenerationModelStore: LocalGenerationModelStore,
     private val brain: OnDeviceBrain,
-    private val memory: JarvisMemory
+    private val memory: JarvisMemory,
+    @SpeechDispatcher private val speechDispatcher: kotlinx.coroutines.CoroutineDispatcher =
+        kotlinx.coroutines.Dispatchers.Default
 ) : ViewModel() {
 
     private val machine = AssistantUiStateMachine()
@@ -127,7 +129,8 @@ class AssistantViewModel @Inject constructor(
         engine = sttEngine,
         audioStream = audioCaptureSource.frames,
         frameRecycler = { /* AudioCaptureSource emits an owned frame copy. */ },
-        eventDispatcher = ::dispatchSttEvent
+        eventDispatcher = ::dispatchSttEvent,
+        dispatcher = speechDispatcher
     )
 
     init {
