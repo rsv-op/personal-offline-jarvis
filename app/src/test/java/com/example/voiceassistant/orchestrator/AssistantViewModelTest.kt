@@ -73,6 +73,7 @@ class AssistantViewModelTest {
     private lateinit var mockModelStore: VoskModelStore
     private lateinit var mockLocalTextGenerator: LocalTextGenerator
     private lateinit var mockLocalGenerationModelStore: LocalGenerationModelStore
+    private lateinit var classifier: AiMatrixClassifier
     private lateinit var memory: JarvisMemory
     private lateinit var brain: OnDeviceBrain
     private lateinit var viewModel: AssistantViewModel
@@ -116,7 +117,7 @@ class AssistantViewModelTest {
 
         val vault = SecureVault(File(temporaryFolder.root, "vault"), SoftwareVaultCipher())
         memory = JarvisMemory(vault).apply { ioDispatcher = dispatcher }
-        val classifier = AiMatrixClassifier.fromJson(TestFiles.aiMatrixAsset().readText())
+        classifier = AiMatrixClassifier.fromJson(TestFiles.aiMatrixAsset().readText())
         brain = OnDeviceBrain(FakeModelSource(classifier), memory)
 
         runBlocking {
