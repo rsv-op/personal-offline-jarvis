@@ -37,6 +37,26 @@ class IntentRouterTest {
     }
 
     @Test
+    fun `impossible clock times are rejected so the assistant can ask again`() {
+        // Minutes only run to 59: these are not times, they are garbled speech.
+        assertNull(router.extractAlarmTime(normalizer.normalize("alarm at 12 99")))
+        assertNull(router.extractAlarmTime(normalizer.normalize("alarm at 12:60")))
+        // No 24-hour clock has 24 or 25 o'clock.
+        assertNull(router.extractAlarmTime(normalizer.normalize("alarm at 25 30")))
+        // A 12-hour phrase cannot name hour 13, and "0 am" is not a clock time either.
+        assertNull(router.extractAlarmTime(normalizer.normalize("alarm at 13 pm")))
+        assertNull(router.extractAlarmTime(normalizer.normalize("alarm at 0 am")))
+
+        // Boundaries stay valid, and the request still carries its time.
+        assertEquals("23:59", router.extractAlarmTime(normalizer.normalize("alarm at 23 59")))
+        assertEquals("00:00", router.extractAlarmTime(normalizer.normalize("alarm at 00 00")))
+        assertEquals("12:00 pm", router.extractAlarmTime(normalizer.normalize("alarm at 12 pm")))
+        assertEquals(AppIntent.SetAlarm("23:59"), route("set an alarm for 23 59").intent)
+        // An impossible time degrades to "no time", which triggers the follow-up question.
+        assertEquals(AppIntent.SetAlarm(null), route("set an alarm for 12 99").intent)
+    }
+
+    @Test
     fun `timer routes carry a duration`() {
         assertEquals(AppIntent.SetTimer(600), route("set a timer for ten minutes").intent)
         assertEquals(AppIntent.SetTimer(null), route("start a countdown").intent)

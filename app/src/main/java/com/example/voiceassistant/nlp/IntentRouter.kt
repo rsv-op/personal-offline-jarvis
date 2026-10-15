@@ -111,7 +111,19 @@ class IntentRouter {
         return null
     }
 
-    /** "seven thirty am" -> "07:30 am"; `null` when no time is present. */
+    /**
+     * "seven thirty am" -> "07:30 am"; `null` when the utterance holds no *real* clock time.
+     *
+     * Impossible times are rejected rather than passed on, because the caller reacts to
+     * `null` by asking for the time again:
+     *
+     * - minutes outside 0–59 ("alarm at 12:99" is not a time),
+     * - hours outside 0–23,
+     * - 12-hour phrasing with an impossible hour ("13 pm", "0 am").
+     *
+     * The 12-hour → 24-hour conversion itself belongs to [AlarmExecutor.parseTime], which
+     * understands the am/pm suffix this method preserves.
+     */
     fun extractAlarmTime(text: String): String? {
         var processedText = text
         timeMap.forEach { (word, number) ->
@@ -123,7 +135,9 @@ class IntentRouter {
         val hour = match.groupValues[1].toIntOrNull() ?: return null
         if (hour !in 0..23) return null
         val minutes = match.groupValues[2].ifEmpty { "00" }
+        if ((minutes.toIntOrNull() ?: return null) !in 0..59) return null
         val amPm = match.groupValues[3]
+        if (amPm.isNotEmpty() && hour !in 1..12) return null
         return "${hour.toString().padStart(2, '0')}:$minutes${if (amPm.isNotEmpty()) " $amPm" else ""}"
     }
 
