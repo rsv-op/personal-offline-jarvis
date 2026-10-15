@@ -175,9 +175,11 @@ measured optima; device speed is unknown until benchmarked.
 
 ### Model import limits
 
-- Vosk archive: ≤ **2,000,000,000 bytes**, ≤ **5,000 entries**, model root searched to
-  **6 levels**, must contain `conf/model.conf`; archives are extracted with zip-slip
-  protection into private storage.
+- Vosk archive: ≤ **3,221,225,472 bytes (3 GiB) extracted**, ≤ **5,000 entries**, model root
+  searched to **6 levels**, must contain `conf/model.conf`; archives are extracted with
+  zip-slip protection into private storage. The 3 GiB cap is sized to admit the largest
+  official model (`vosk-model-en-us-0.22-lgraph`, ≈2.3 GB extracted) while still bounding
+  how much of the user data partition a single import can fill.
 - A speech model must be *usable*, not merely present: `conf/model.conf` has to exist with
   content and the model has to hold at least **1 MiB** of payload. Both the importer and the
   speech engine check the contents before loading, so an empty or truncated model is refused

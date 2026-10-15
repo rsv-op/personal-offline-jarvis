@@ -24,7 +24,13 @@ internal object ModelArchiveExtractor {
     /** Anything smaller than this cannot be a usable speech model. */
     const val MIN_MODEL_BYTES = 1_048_576L
 
-    const val MAX_MODEL_BYTES = 2_000_000_000L
+    /**
+     * 3 GiB. The largest official Vosk model (`vosk-model-en-us-0.22-lgraph`) extracts to
+     * about 2.3 GB, and any future model is bounded well below this on a phone. The cap
+     * is enforced against the *extracted* total, not the archive size, so a tightly-packed
+     * zip of a 2.3 GB model passes too.
+     */
+    const val MAX_MODEL_BYTES = 3L * 1024L * 1024L * 1024L
     const val MAX_SEARCH_DEPTH = 6
     const val MAX_ARCHIVE_ENTRIES = 5_000
 
