@@ -160,6 +160,8 @@ jobs:
           SIGNER="$(ls "$SDK"/build-tools/*/apksigner | sort -V | tail -1)"
           "$AAPT" dump badging "$APK" > /tmp/badging.txt
           "$SIGNER" verify --print-certs "$APK" > /tmp/certs.txt 2>&1 || true
+          echo "--- badging ---"; cat /tmp/badging.txt
+          echo "--- certificates ---"; cat /tmp/certs.txt
           APK_PATH="$APK" python3 - <<'PY'
           import os
           import pathlib
@@ -171,23 +173,33 @@ jobs:
           certs = pathlib.Path("/tmp/certs.txt").read_text(errors="replace")
           apk = os.environ["APK_PATH"]
 
+          # aapt2 has shipped more than one spelling for the SDK levels over the years
+          # (`sdkVersion:'26'`, `minSdkVersion='26'`, and the same for the target), so the
+          # levels are collected line by line instead of trusting one exact format.
+          levels = {}
+          for line in badging.splitlines():
+              match = re.match(r"\s*([A-Za-z]+)\s*[:=]\s*'?(\d+)\s*'?\s*$", line.strip())
+              if match:
+                  levels.setdefault(match.group(1), match.group(2))
+
           def find(pattern, text=badging):
-              # Every pattern is anchored to a line of `aapt2 dump badging` output.
               match = re.search(pattern, text, re.M)
               return match.group(1) if match else None
 
-          package = find(r"^package: (.*)$", badging)
+          min_sdk = levels.get("sdkVersion") or levels.get("minSdkVersion")
+          target_sdk = levels.get("targetSdkVersion")
+          compile_sdk = find(r"compileSdkVersion\s*[:=]\s*'?(\d+)")
+          package = find(r"^package: (.*)$")
           version = find(r"versionName='([^']*)'")
           code = find(r"versionCode='([^']*)'")
-          min_sdk = find(r"sdkVersion:\s*'?(\d+)'?")
-          target_sdk = find(r"targetSdkVersion:\s*'?(\d+)'?")
-          compile_sdk = find(r"compileSdkVersion='(\d+)'")
           abis = find(r"^native-code: (.*)$")
           permissions = re.findall(r"uses-permission: name='([^']+)'", badging)
+          sdk_lines = [l.strip() for l in badging.splitlines() if re.match(r"^(min|target|compile)?sdkVersion", l.strip(), re.I)]
 
           findings = [
               f"package: {package or 'MISSING'} (versionCode {code or '?'}, versionName {version or '?'})",
               f"compile {compile_sdk or '?'} / min {min_sdk or '?'} -> target {target_sdk or '?'}",
+              "badging levels: " + (", ".join(sdk_lines) or "none"),
               f"native-code: {abis or 'none'}",
               "uses-permission: " + (", ".join(sorted(permissions)) or "none"),
           ]
@@ -220,11 +232,13 @@ jobs:
                   if not libs:
                       problems.append(f"no native libraries for {abi}")
 
-          signer = find(r"Signer #1 certificate DN: (.*)", certs)
+          # apksigner labels signers "Signer #1 certificate DN:" on older build-tools and
+          # "V2 Signer: certificate DN:" on newer ones, so only the tail is matched.
+          signer = re.search(r"certificate DN:\s*(.+)", certs)
           if signer:
-              findings.append("signed by: " + signer.strip())
+              findings.append("signed by: " + signer.group(1).strip())
           else:
-              findings.append("signature: NOT VERIFIED — " + " ".join(certs.split())[:200])
+              findings.append("signature: NOT VERIFIED - " + " ".join(certs.split())[:200])
               problems.append("apksigner could not confirm a valid signature")
 
           print("::notice title=APK verification::" + " | ".join(findings).replace("%", "%25"))
