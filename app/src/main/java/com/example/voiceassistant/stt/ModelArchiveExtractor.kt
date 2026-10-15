@@ -122,14 +122,14 @@ internal object ModelArchiveExtractor {
     fun describeRejection(directory: File): String {
         val files = directory.walkTopDown().filter(File::isFile).toList()
         val megabytes = files.sumOf(File::length) / (1024.0 * 1024.0)
-        val config = File(directory, CONFIG_FILE)
+        val configs = files.filter { it.name == "model.conf" && it.parentFile?.name == "conf" }
         return when {
             files.isEmpty() ->
                 "Nothing was extracted from that archive — the download may be empty or not a .zip file."
-            !config.isFile ->
+            configs.isEmpty() ->
                 "That archive has no conf/model.conf (extracted ${files.size} files, " +
                     "%.1f MB) — it does not look like a Vosk model.".format(megabytes)
-            config.length() == 0L ->
+            configs.all { it.length() == 0L } ->
                 "The extracted conf/model.conf is empty (extracted ${files.size} files, " +
                     "%.1f MB) — the archive is incomplete.".format(megabytes)
             else ->

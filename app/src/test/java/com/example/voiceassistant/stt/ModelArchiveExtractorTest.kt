@@ -156,6 +156,9 @@ class ModelArchiveExtractorTest {
             "a model far below the minimum size cannot be loaded by Vosk",
             ModelArchiveExtractor.isModelDirectory(File(destination, modelFolderName))
         )
+        assertTrue(
+            ModelArchiveExtractor.describeRejection(destination).contains("too small")
+        )
     }
 
     @Test

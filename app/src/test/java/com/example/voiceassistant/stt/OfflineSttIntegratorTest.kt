@@ -83,7 +83,12 @@ class OfflineSttIntegratorTest {
         advanceUntilIdle()
 
         val error = capturedEvents.filterIsInstance<SttEvent.OnError>().single()
-        assertTrue(error.exception.message.orEmpty().contains("Failed to initialize STT model"))
+        val message = error.exception.message.orEmpty()
+        assertTrue(message.contains("Failed to load the offline speech model"))
+        // The engine's own reason must survive: it is what makes a broken model import
+        // diagnosable from the phone instead of a generic "could not initialise".
+        assertTrue("the cause should be included, was: $message", message.contains("Crash"))
+        assertEquals(message, integrator.lastInitializationError)
     }
 
     @Test
