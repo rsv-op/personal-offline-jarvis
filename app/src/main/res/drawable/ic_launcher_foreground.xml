@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A minimal "listening orb": outer ring, inner core, sound arcs. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#29E3F5"
+        android:pathData="M54,34 m-16,0 a16,16 0 1,0 32,0 a16,16 0 1,0 -32,0" />
+    <path
+        android:strokeColor="#29E3F5"
+        android:strokeWidth="3"
+        android:fillColor="#00000000"
+        android:pathData="M54,34 m-24,0 a24,24 0 1,0 48,0 a24,24 0 1,0 -48,0" />
+    <path
+        android:strokeColor="#7CE7F5"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:pathData="M30,62 L42,62 L46,52 L52,74 L58,58 L62,66 L78,66" />
+</vector>

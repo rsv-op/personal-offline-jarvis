@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">JARVIS</string>
+    <string name="assistant_description">Private, fully offline voice assistant</string>
 </resources>

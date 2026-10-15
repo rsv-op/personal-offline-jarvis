@@ -3,12 +3,49 @@ name: Build
 on:
   push:
     branches: [ "main" ]
+    tags: [ "v*" ]
   pull_request:
     branches: [ "main" ]
   workflow_dispatch:
+    inputs:
+      publish_release:
+        description: "Attach the built APK to the 'jarvis-latest' GitHub release"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
 
 jobs:
+  ai-matrix:
+    name: ai-matrix intent brain (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install NumPy and pytest
+        run: python -m pip install --upgrade pip numpy pytest
+
+      - name: Run the ai-matrix test suite
+        working-directory: ai-matrix
+        run: python -m pytest tests -q
+
+      - name: Check the bundled model asset is current
+        working-directory: ai-matrix
+        run: |
+          python -m ai_matrix.cli export
+          git diff --exit-code -- ../app/src/main/assets/ai_matrix_model.json \
+            || (echo "::error::app/src/main/assets/ai_matrix_model.json is stale. Run 'python -m ai_matrix.cli export' from ai-matrix/ and commit the result." && exit 1)
+          git checkout -- ../app/src/main/assets/ai_matrix_model.json
+
   build:
+    name: Android APK
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -20,17 +57,55 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
 
-      - name: Setup Gradle 8.14.6
+      - name: Set up the Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install the Android 16 platform
+        run: sdkmanager --install "platforms;android-36" "build-tools;36.0.0" "platform-tools"
+
+      - name: Reuse the debug signing key between runs
+        id: keystore
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: jarvis-debug-keystore-v1
+
+      - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.14.6'
 
-      - name: Run unit tests and assemble debug APK
+      - name: Run unit tests and assemble the APK
+        env:
+          JARVIS_VERSION_CODE: ${{ github.run_number }}
         run: gradle --no-daemon --stacktrace :app:testDebugUnitTest :app:assembleDebug
+
+      - name: Collect build outputs
+        run: |
+          mkdir -p build-outputs
+          cp app/build/outputs/apk/debug/app-debug.apk build-outputs/jarvis-offline-debug.apk
+          ls -lh build-outputs
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: personal-offline-jarvis-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: build-outputs/jarvis-offline-debug.apk
           if-no-files-found: error
+
+      - name: Publish (or refresh) the installable release
+        # Pull requests get a read-only token, so only publish for main/tags/manual runs.
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="jarvis-latest"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" build-outputs/jarvis-offline-debug.apk --clobber
+          else
+            gh release create "$TAG" build-outputs/jarvis-offline-debug.apk \
+              --title "JARVIS offline assistant (latest APK)" \
+              --notes "Signed debug APK built from ${{ github.sha }} on ${{ github.ref_name }}. Download it on your phone and tap it to install (allow installs from this source when Android asks). Everything in the app runs offline: no INTERNET permission. Speech model and optional reply model are imported by you from local files." \
+              --target "${{ github.sha }}"
+          fi

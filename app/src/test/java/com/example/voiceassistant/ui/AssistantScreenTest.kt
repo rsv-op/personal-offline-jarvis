@@ -6,7 +6,10 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTextInput
+import com.example.voiceassistant.nlp.NlpProcessor
 import com.example.voiceassistant.statemachine.AssistantUiState
+import com.example.voiceassistant.vault.JarvisMemory
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -48,10 +51,13 @@ class AssistantScreenTest {
                 transcript = "Set alarm?",
                 onConfirm = { confirmed = true },
                 onDeny = { denied = true },
-                onManualWake = {}
+                onManualWake = {},
+                confirmationPrompt = "Do you want me to set the alarm for 07:00?"
             )
         }
 
+        composeTestRule.onNodeWithTag("ConfirmationPrompt")
+            .assertTextEquals("Do you want me to set the alarm for 07:00?")
         composeTestRule.onNodeWithTag("ConfirmButton").performClick()
         composeTestRule.onNodeWithTag("DenyButton").performClick()
         assertTrue(confirmed)
@@ -71,5 +77,119 @@ class AssistantScreenTest {
         }
         val transcriptNodes = composeTestRule.onAllNodesWithTag("TranscriptText").fetchSemanticsNodes()
         assertEquals(0, transcriptNodes.size)
+    }
+
+    @Test
+    fun `status panel shows what is installed`() {
+        composeTestRule.setContent {
+            AssistantScreen(
+                uiState = AssistantUiState.Idle,
+                transcript = "",
+                onConfirm = {},
+                onDeny = {},
+                onManualWake = {},
+                modelStatus = "Offline speech model ready",
+                modelSizeMb = 41.0,
+                brainStatus = "intent brain ready",
+                vaultStatus = "0 taught phrases • vault on StrongBox secure element",
+                replyModelStatus = "Local reply model not installed"
+            )
+        }
+
+        composeTestRule.onNodeWithTag("ModelStatusText")
+            .assertTextEquals("Offline speech model ready (41 MB)")
+        composeTestRule.onNodeWithTag("BrainStatusText").assertTextEquals("intent brain ready")
+        composeTestRule.onNodeWithTag("VaultStatusText")
+            .assertTextEquals("0 taught phrases • vault on StrongBox secure element")
+    }
+
+    @Test
+    fun `teaching a phrase reports the chosen action`() {
+        var taughtPhrase: String? = null
+        var taughtLabel: String? = null
+        composeTestRule.setContent {
+            AssistantScreen(
+                uiState = AssistantUiState.Idle,
+                transcript = "",
+                onConfirm = {},
+                onDeny = {},
+                onManualWake = {},
+                onTeach = { phrase, label ->
+                    taughtPhrase = phrase
+                    taughtLabel = label
+                }
+            )
+        }
+
+        composeTestRule.onNodeWithTag("TeachPhraseField").performTextInput("make it bright")
+        composeTestRule.onNodeWithTag("Teach_FLASHLIGHT_ON").performClick()
+
+        assertEquals("make it bright", taughtPhrase)
+        assertEquals("FLASHLIGHT_ON", taughtLabel)
+    }
+
+    @Test
+    fun `taught phrases can be forgotten`() {
+        var forgotten: String? = null
+        composeTestRule.setContent {
+            AssistantScreen(
+                uiState = AssistantUiState.Idle,
+                transcript = "",
+                onConfirm = {},
+                onDeny = {},
+                onManualWake = {},
+                taughtPhrases = listOf(
+                    JarvisMemory.TaughtExample("make it bright", "FLASHLIGHT_ON", 0L)
+                ),
+                onForget = { phrase -> forgotten = phrase }
+            )
+        }
+
+        composeTestRule.onNodeWithTag("ForgetAllButton").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("Forget_make it bright").performClick()
+        assertEquals("make it bright", forgotten)
+    }
+
+    @Test
+    fun `import buttons are offered for folders archives and reply models`() {
+        var folder = false
+        var archive = false
+        var reply = false
+        composeTestRule.setContent {
+            AssistantScreen(
+                uiState = AssistantUiState.Idle,
+                transcript = "",
+                onConfirm = {},
+                onDeny = {},
+                onManualWake = {},
+                onInstallModel = { folder = true },
+                onInstallArchive = { archive = true },
+                onInstallReplyModel = { reply = true }
+            )
+        }
+
+        composeTestRule.onNodeWithTag("InstallModelButton").performClick()
+        composeTestRule.onNodeWithTag("InstallArchiveButton").performClick()
+        composeTestRule.onNodeWithTag("InstallReplyModelButton").performClick()
+
+        assertTrue(folder)
+        assertTrue(archive)
+        assertTrue(reply)
+    }
+
+    @Test
+    fun `the routing source is shown when the brain matched a phrase`() {
+        composeTestRule.setContent {
+            AssistantScreen(
+                uiState = AssistantUiState.NeedsConfirmation,
+                transcript = "make it bright",
+                onConfirm = {},
+                onDeny = {},
+                onManualWake = {},
+                intentSource = NlpProcessor.Source.TAUGHT
+            )
+        }
+        composeTestRule.onNodeWithTag("IntentSourceText")
+            .assertTextEquals("matched a phrase you taught me")
     }
 }

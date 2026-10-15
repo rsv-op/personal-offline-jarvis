@@ -4,27 +4,35 @@ import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.voiceassistant.aimatrix.OnDeviceBrain
 import com.example.voiceassistant.execution.AlarmExecutor
+import com.example.voiceassistant.execution.AssistantStatusProvider
 import com.example.voiceassistant.execution.FlashlightExecutor
+import com.example.voiceassistant.execution.StatusExecutor
+import com.example.voiceassistant.execution.TimerExecutor
 import com.example.voiceassistant.execution.TtsController
 import com.example.voiceassistant.execution.TtsEvent
 import com.example.voiceassistant.generation.LocalGenerationModelStore
 import com.example.voiceassistant.generation.LocalTextGenerator
 import com.example.voiceassistant.nlp.AppIntent
 import com.example.voiceassistant.nlp.NlpProcessor
+import com.example.voiceassistant.nlp.TextNormalizer
+import com.example.voiceassistant.statemachine.AssistantEvent
 import com.example.voiceassistant.statemachine.AssistantUiState
+import com.example.voiceassistant.statemachine.AssistantUiStateMachine
 import com.example.voiceassistant.stt.AudioCaptureSource
 import com.example.voiceassistant.stt.OfflineSttIntegrator
 import com.example.voiceassistant.stt.SttEngine
 import com.example.voiceassistant.stt.SttEvent
 import com.example.voiceassistant.stt.VoskModelStore
+import com.example.voiceassistant.vault.JarvisMemory
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.CoroutineStart
-import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -32,48 +40,87 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.util.UUID
 import javax.inject.Inject
 
+/**
+ * The assistant's brain stem: owns the voice loop, the confirmation gate and every
+ * piece of state the screen shows.
+ *
+ * Voice loop:
+ * ```
+ *   tap orb -> load speech model -> listen -> transcribe (Vosk)
+ *     -> route intent (rules, then the ai-matrix brain)
+ *     -> device action? ask "do you want me to ...?" and wait for yes/cancel
+ *     -> execute -> speak the result -> log it to the encrypted vault -> idle
+ * ```
+ *
+ * The confirmation gate is deliberately not optional: [AppIntent.changesDeviceState]
+ * intents are never executed without either a tap on Confirm or a spoken "yes".
+ */
 @HiltViewModel
 class AssistantViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     private val ttsController: TtsController,
     private val flashlightExecutor: FlashlightExecutor,
     private val alarmExecutor: AlarmExecutor,
+    private val timerExecutor: TimerExecutor,
+    private val statusExecutor: StatusExecutor,
+    val assistantStatusProvider: AssistantStatusProvider,
     private val nlpProcessor: NlpProcessor,
     sttEngine: SttEngine,
     private val audioCaptureSource: AudioCaptureSource,
     private val modelStore: VoskModelStore,
     private val localTextGenerator: LocalTextGenerator,
-    private val localGenerationModelStore: LocalGenerationModelStore
+    private val localGenerationModelStore: LocalGenerationModelStore,
+    private val brain: OnDeviceBrain,
+    private val memory: JarvisMemory
 ) : ViewModel() {
-    private val _uiState = MutableStateFlow<AssistantUiState>(AssistantUiState.Idle)
-    val uiState: StateFlow<AssistantUiState> = _uiState.asStateFlow()
+
+    private val machine = AssistantUiStateMachine()
+
+    /** Screen state, owned by [AssistantUiStateMachine]. */
+    val uiState: StateFlow<AssistantUiState> = machine.uiState
+
+    private val normalizer = TextNormalizer()
 
     private val _partialTranscript = MutableStateFlow("")
     val partialTranscript: StateFlow<String> = _partialTranscript.asStateFlow()
 
-    private val _modelStatus = MutableStateFlow(
-        if (modelStore.installedModelPath() == null) {
-            "Offline speech model not installed"
-        } else {
-            "Offline speech model ready"
-        }
-    )
+    private val _lastUtterance = MutableStateFlow("")
+    val lastUtterance: StateFlow<String> = _lastUtterance.asStateFlow()
+
+    private val _modelStatus = MutableStateFlow("")
     val modelStatus: StateFlow<String> = _modelStatus.asStateFlow()
 
-    private val _replyModelStatus = MutableStateFlow(
-        if (localGenerationModelStore.installedModelPath() == null) {
-            "Local reply model not installed"
-        } else {
-            "Local reply model ready"
-        }
-    )
+    private val _modelSizeMb = MutableStateFlow<Double?>(null)
+    val modelSizeMb: StateFlow<Double?> = _modelSizeMb.asStateFlow()
+
+    private val _replyModelStatus = MutableStateFlow("")
     val replyModelStatus: StateFlow<String> = _replyModelStatus.asStateFlow()
+
+    private val _brainStatus = MutableStateFlow("")
+    val brainStatus: StateFlow<String> = _brainStatus.asStateFlow()
+
+    private val _vaultStatus = MutableStateFlow("")
+    val vaultStatus: StateFlow<String> = _vaultStatus.asStateFlow()
+
+    private val _taughtPhrases = MutableStateFlow<List<JarvisMemory.TaughtExample>>(emptyList())
+    val taughtPhrases: StateFlow<List<JarvisMemory.TaughtExample>> = _taughtPhrases.asStateFlow()
 
     private val _statusMessage = MutableStateFlow("")
     val statusMessage: StateFlow<String> = _statusMessage.asStateFlow()
 
+    private val _confirmationPrompt = MutableStateFlow("")
+    val confirmationPrompt: StateFlow<String> = _confirmationPrompt.asStateFlow()
+
+    private val _intentSource = MutableStateFlow<NlpProcessor.Source?>(null)
+    val intentSource: StateFlow<NlpProcessor.Source?> = _intentSource.asStateFlow()
+
+    private val _isImporting = MutableStateFlow(false)
+    val isImporting: StateFlow<Boolean> = _isImporting.asStateFlow()
+
     private var pendingIntent: AppIntent? = null
     private var awaitingAlarmTime = false
+    private var awaitingTimerDuration = false
+    private var awaitingConfirmationAnswer = false
     private var loadedModelPath: String? = null
 
     private val sttIntegrator = OfflineSttIntegrator(
@@ -84,69 +131,91 @@ class AssistantViewModel @Inject constructor(
     )
 
     init {
-        viewModelScope.launch {
-            ttsController.events.collect { event ->
-                if (event is TtsEvent.OnDone && _uiState.value is AssistantUiState.Speaking) {
-                    _uiState.value = AssistantUiState.Idle
-                }
-            }
-        }
+        viewModelScope.launch { refreshStatuses() }
         viewModelScope.launch {
             audioCaptureSource.errors.collect { error ->
                 _statusMessage.value = error.message ?: "Microphone capture failed"
-                audioCaptureSource.stop()
-                sttIntegrator.stopTranscription(emitFinalResult = false)
-                _uiState.value = AssistantUiState.Idle
+                fullReset()
             }
         }
     }
 
-    fun onTranscriptChanged(text: String) {
-        _partialTranscript.value = text
+    // --------------------------------------------------------------- status
+
+    private suspend fun refreshStatuses() {
+        _brainStatus.value = runCatching { assistantStatusProvider.shortStatus() }
+            .getOrDefault("intent brain unavailable")
+        _modelStatus.value = if (modelStore.installedModelPath() == null) {
+            "Offline speech model not installed"
+        } else {
+            "Offline speech model ready"
+        }
+        _modelSizeMb.value = modelStore.installedModelSizeMb()
+        _replyModelStatus.value = if (localGenerationModelStore.installedModelPath() == null) {
+            "Local reply model not installed (open-ended answers use the built-in replies)"
+        } else {
+            "Local reply model ready"
+        }
+        _vaultStatus.value = runCatching {
+            val summary = memory.summary()
+            "${summary.taughtExamples} taught phrases • vault on ${summary.backend}"
+        }.getOrDefault("Encrypted vault unavailable")
+        _taughtPhrases.value = runCatching { memory.examples() }.getOrDefault(emptyList())
     }
 
-    fun importOfflineModel(treeUri: Uri) {
-        if (_uiState.value !is AssistantUiState.Idle) return
-        _uiState.value = AssistantUiState.Processing
+    // ---------------------------------------------------------- model import
+
+    /** Imports an extracted Vosk model folder. */
+    fun importOfflineModel(treeUri: Uri) = importSpeechModel { modelStore.importModelTree(treeUri) }
+
+    /** Imports a Vosk model downloaded as a `.zip` — the phone-friendly path. */
+    fun importOfflineModelArchive(archiveUri: Uri) =
+        importSpeechModel { modelStore.importModelArchive(archiveUri) }
+
+    private fun importSpeechModel(importBlock: suspend () -> String) {
+        if (_isImporting.value) return
+        _isImporting.value = true
         viewModelScope.launch {
-            _modelStatus.value = "Importing offline speech model…"
-            _statusMessage.value = ""
+            _statusMessage.value = "Importing the speech model… this can take a minute"
             try {
-                modelStore.importModelTree(treeUri)
-                loadedModelPath = null
-                _modelStatus.value = "Offline speech model ready"
-                _statusMessage.value = "Model installed. You can now speak offline."
-                _uiState.value = AssistantUiState.Idle
+                importBlock()
+                loadedModelPath = null // force a reload of the newly installed model
+                _statusMessage.value = "Speech model installed. Everything stays on this device."
             } catch (error: Exception) {
-                _modelStatus.value = "Offline speech model import failed"
                 _statusMessage.value = error.message ?: "Could not import the selected model"
-                _uiState.value = AssistantUiState.Idle
+            } finally {
+                _isImporting.value = false
+                refreshStatuses()
             }
         }
     }
 
     fun importReplyModel(uri: Uri) {
-        if (_uiState.value !is AssistantUiState.Idle) return
-        _uiState.value = AssistantUiState.Processing
+        if (_isImporting.value) return
+        _isImporting.value = true
         viewModelScope.launch {
-            _replyModelStatus.value = "Importing local reply model…"
-            _statusMessage.value = ""
+            _statusMessage.value = "Importing the reply model…"
             try {
                 localGenerationModelStore.importModel(uri)
                 localTextGenerator.onModelUpdated()
-                _replyModelStatus.value = "Local reply model ready"
-                _statusMessage.value = "Open-ended replies will use the local model on this device."
-                _uiState.value = AssistantUiState.Idle
+                _statusMessage.value = "Reply model installed for open-ended questions."
             } catch (error: Exception) {
-                _replyModelStatus.value = "Local reply model import failed"
                 _statusMessage.value = error.message ?: "Could not import the selected reply model"
-                _uiState.value = AssistantUiState.Idle
+            } finally {
+                _isImporting.value = false
+                refreshStatuses()
             }
         }
     }
 
+    // ------------------------------------------------------------ listening
+
+    fun onTranscriptChanged(text: String) {
+        _partialTranscript.value = text
+    }
+
     fun toggleListening() {
-        if (_uiState.value is AssistantUiState.Listening) {
+        if (uiState.value is AssistantUiState.Listening) {
             stopListening()
         } else {
             startListening()
@@ -154,17 +223,30 @@ class AssistantViewModel @Inject constructor(
     }
 
     fun startListening() {
-        if (_uiState.value !is AssistantUiState.Idle) return
+        val current = uiState.value
+        if (current is AssistantUiState.Listening) {
+            stopListening()
+            return
+        }
+        if (current !is AssistantUiState.Idle &&
+            current !is AssistantUiState.ReturnToIdle &&
+            current !is AssistantUiState.NeedsConfirmation
+        ) {
+            return
+        }
+
         val modelPath = modelStore.installedModelPath()
         if (modelPath == null) {
-            _statusMessage.value = "Import an offline Vosk model folder before listening."
+            _statusMessage.value = "Import an offline Vosk model (folder or .zip) before listening."
             _modelStatus.value = "Offline speech model not installed"
             return
         }
 
-        _uiState.value = AssistantUiState.Processing
+        val answeringConfirmation = current is AssistantUiState.NeedsConfirmation
+        machine.processEvent(AssistantEvent.OnWakeWordDetected)
+
         viewModelScope.launch {
-            _statusMessage.value = "Loading offline speech model…"
+            _statusMessage.value = "Loading the offline speech model…"
             _partialTranscript.value = ""
             try {
                 if (loadedModelPath != modelPath) {
@@ -173,22 +255,26 @@ class AssistantViewModel @Inject constructor(
                     }
                     loadedModelPath = modelPath
                 }
+                awaitingConfirmationAnswer = answeringConfirmation
                 sttIntegrator.startTranscription()
                 audioCaptureSource.start()
-                _statusMessage.value = "Listening offline"
-                _uiState.value = AssistantUiState.Listening
+                machine.processEvent(AssistantEvent.OnSpeechStarted)
+                _statusMessage.value = if (answeringConfirmation) {
+                    "Listening for your yes or cancel"
+                } else {
+                    "Listening offline — tap the orb to stop"
+                }
             } catch (error: Exception) {
-                audioCaptureSource.stop()
-                sttIntegrator.stopTranscription(emitFinalResult = false)
-                _uiState.value = AssistantUiState.Idle
+                awaitingConfirmationAnswer = false
                 _statusMessage.value = error.message ?: "Could not start listening"
+                fullReset(keepMessage = true)
             }
         }
     }
 
     fun stopListening() {
-        if (_uiState.value !is AssistantUiState.Listening) return
-        _uiState.value = AssistantUiState.Processing
+        if (uiState.value !is AssistantUiState.Listening) return
+        machine.processEvent(AssistantEvent.OnSpeechEnded)
         _statusMessage.value = "Finishing transcription…"
         viewModelScope.launch {
             audioCaptureSource.stop()
@@ -196,146 +282,289 @@ class AssistantViewModel @Inject constructor(
         }
     }
 
-    fun onIntentParsed(
-        parsed: NlpProcessor.OnIntentParsed,
-        originalUtterance: String? = null
-    ) {
-        if (parsed.intent is AppIntent.SetAlarm && parsed.intent.time == null) {
-            awaitingAlarmTime = true
-            pendingIntent = null
-            viewModelScope.launch {
-                speakAndReturnToIdle("What time would you like to set the alarm for?")
-                if (awaitingAlarmTime) startListening()
-            }
-        } else if (parsed.intent is AppIntent.UnknownIntent) {
-            handleOpenEndedRequest(originalUtterance.orEmpty())
-        } else if (!parsed.needsConfirmation) {
-            executeIntent(parsed.intent)
-        } else {
-            pendingIntent = parsed.intent
-            viewModelScope.launch {
-                _uiState.value = AssistantUiState.Speaking
-                ttsController.speak(confirmationPrompt(parsed.intent))
-                _uiState.value = AssistantUiState.NeedsConfirmation
-                _statusMessage.value = "Confirm or cancel the requested action"
-            }
-        }
-    }
-
-    fun confirmAction() {
-        awaitingAlarmTime = false
-        pendingIntent?.let(::executeIntent)
-        pendingIntent = null
-    }
-
-    fun denyAction() {
-        awaitingAlarmTime = false
-        pendingIntent = null
-        viewModelScope.launch { speakAndReturnToIdle("Okay, cancelled.") }
-    }
-
-    private fun handleOpenEndedRequest(userText: String) {
-        if (userText.isBlank()) {
-            viewModelScope.launch { speakAndReturnToIdle("I didn't catch that. Please try again.") }
-            return
-        }
-        if (localGenerationModelStore.installedModelPath() == null) {
-            viewModelScope.launch {
-                speakAndReturnToIdle(
-                    "I can answer open-ended questions after you import a local reply model."
-                )
-            }
-            return
-        }
-
-        _uiState.value = AssistantUiState.Processing
-        _statusMessage.value = "Thinking with the on-device model…"
-        viewModelScope.launch {
-            try {
-                val reply = localTextGenerator.generateReply(userText)
-                speakAndReturnToIdle(reply)
-            } catch (error: Exception) {
-                _replyModelStatus.value = "Local reply model could not be loaded"
-                speakAndReturnToIdle("I couldn't load the local reply model. Please check the selected file.")
-                _statusMessage.value = error.message ?: "Local generation failed"
-            }
-        }
-    }
+    // ------------------------------------------------------------- the brain
 
     private fun dispatchSttEvent(event: SttEvent) {
         when (event) {
             is SttEvent.OnPartialResult -> viewModelScope.launch {
                 _partialTranscript.value = event.text
-                _uiState.value = AssistantUiState.Listening
             }
+
             is SttEvent.OnFinalResult -> viewModelScope.launch {
                 audioCaptureSource.stop()
                 sttIntegrator.stopTranscription(emitFinalResult = false)
+                if (uiState.value is AssistantUiState.Listening) {
+                    machine.processEvent(AssistantEvent.OnSpeechEnded)
+                }
                 _partialTranscript.value = event.text
-                _uiState.value = AssistantUiState.Processing
-                _statusMessage.value = "Understanding your request…"
-                try {
-                    val requestText = if (awaitingAlarmTime) {
+                _lastUtterance.value = event.text
+
+                if (awaitingConfirmationAnswer) {
+                    awaitingConfirmationAnswer = false
+                    handleConfirmationAnswer(event.text)
+                    return@launch
+                }
+
+                val requestText = when {
+                    awaitingAlarmTime -> {
                         awaitingAlarmTime = false
                         "set alarm for ${event.text}"
-                    } else {
-                        event.text
                     }
-                    onIntentParsed(
-                        parsed = nlpProcessor.process(requestText),
-                        originalUtterance = event.text
-                    )
-                } catch (error: Exception) {
-                    _statusMessage.value = error.message ?: "Could not understand the request"
-                    _uiState.value = AssistantUiState.Idle
+                    awaitingTimerDuration -> {
+                        awaitingTimerDuration = false
+                        "set a timer for ${event.text}"
+                    }
+                    else -> event.text
                 }
+                processUtterance(requestText, event.text)
             }
+
             SttEvent.OnEmptyAcoustic -> viewModelScope.launch {
-                if (_uiState.value is AssistantUiState.Listening ||
-                    _uiState.value is AssistantUiState.Processing
-                ) {
-                    _uiState.value = AssistantUiState.Idle
+                val current = uiState.value
+                if (current is AssistantUiState.Listening || current is AssistantUiState.Processing) {
                     _statusMessage.value = "No speech detected"
+                    fullReset(keepMessage = true)
                 }
             }
+
             is SttEvent.OnError -> viewModelScope.launch {
-                audioCaptureSource.stop()
-                sttIntegrator.stopTranscription(emitFinalResult = false)
-                _uiState.value = AssistantUiState.Idle
                 _statusMessage.value = event.exception.message ?: "Offline speech recognition failed"
+                fullReset(keepMessage = true)
             }
         }
     }
 
-    private fun executeIntent(intent: AppIntent) {
-        _uiState.value = AssistantUiState.Executing
-        _statusMessage.value = "Executing action…"
-        viewModelScope.launch {
-            val response = try {
-                when (intent) {
-                    is AppIntent.ToggleFlashlight -> {
-                        flashlightExecutor.execute(context, intent)
-                        "Done."
-                    }
-                    is AppIntent.SetAlarm -> {
-                        alarmExecutor.execute(context, intent)
-                        "Alarm set."
-                    }
-                    is AppIntent.DeleteFile ->
-                        "File deletion is not available in this build."
-                    AppIntent.UnknownIntent -> "I didn't catch that."
+    private suspend fun processUtterance(requestText: String, spokenText: String) {
+        _statusMessage.value = "Understanding your request…"
+        try {
+            val parsed = nlpProcessor.process(requestText)
+            onIntentParsed(parsed, spokenText)
+        } catch (error: Exception) {
+            _statusMessage.value = error.message ?: "Could not understand the request"
+            fullReset(keepMessage = true)
+        }
+    }
+
+    /** Spoken "yes"/"cancel" while a confirmation is pending. */
+    private suspend fun handleConfirmationAnswer(spokenText: String) {
+        val answer = normalizer.normalize(spokenText)
+        val words = answer.split(' ').toSet()
+        val affirmative = words.any { it in AFFIRMATIVE }
+        val negative = words.any { it in NEGATIVE }
+
+        when {
+            affirmative && !negative -> confirmAction()
+            negative && !affirmative -> denyAction()
+            else -> {
+                _statusMessage.value = "Please say yes to confirm or cancel to stop."
+                speakAndSettle(_confirmationPrompt.value.ifBlank { "Should I go ahead?" })
+                if (pendingIntent != null) {
+                    machine.processEvent(AssistantEvent.OnIntentParsed(needsConfirmation = true))
                 }
-            } catch (error: Exception) {
-                _statusMessage.value = error.message ?: "The action could not be completed"
-                "I couldn't complete that action."
             }
-            speakAndReturnToIdle(response)
         }
     }
 
-    private suspend fun speakAndReturnToIdle(text: String) {
-        _uiState.value = AssistantUiState.Speaking
+    fun onIntentParsed(parsed: NlpProcessor.OnIntentParsed, originalUtterance: String? = null) {
+        viewModelScope.launch {
+            _intentSource.value = parsed.source
+            when (val intent = parsed.intent) {
+                is AppIntent.SetAlarm -> if (intent.time == null) {
+                    askForMissingDetail(
+                        question = "What time would you like the alarm for?",
+                        flag = { awaitingAlarmTime = it }
+                    )
+                    return@launch
+                }
+
+                is AppIntent.SetTimer -> if (intent.durationSeconds == null) {
+                    askForMissingDetail(
+                        question = "How long should the timer run?",
+                        flag = { awaitingTimerDuration = it }
+                    )
+                    return@launch
+                }
+
+                is AppIntent.UnknownIntent -> handleOpenEndedRequest(originalUtterance.orEmpty())
+
+                // Deletion is deliberately unimplemented, so there is nothing to confirm:
+                // the assistant explains the limitation and keeps zero file permissions.
+                is AppIntent.DeleteFile -> {
+                    machine.processEvent(AssistantEvent.OnIntentParsed(needsConfirmation = false))
+                    speakAndSettle(
+                        "File deletion is not available in this build, so nothing was deleted."
+                    )
+                    machine.processEvent(AssistantEvent.OnCleanupComplete)
+                }
+
+                else -> {
+                    if (!parsed.needsConfirmation) {
+                        machine.processEvent(AssistantEvent.OnIntentParsed(needsConfirmation = false))
+                        executeIntent(intent, originalUtterance.orEmpty())
+                        return@launch
+                    }
+                    pendingIntent = intent
+                    val prompt = confirmationPrompt(intent)
+                    _confirmationPrompt.value = prompt
+                    speakAndSettle(prompt)
+                    machine.processEvent(AssistantEvent.OnIntentParsed(needsConfirmation = true))
+                    _statusMessage.value = "Say yes, or tap Confirm."
+                }
+            }
+        }
+    }
+
+    private suspend fun askForMissingDetail(question: String, flag: (Boolean) -> Unit) {
+        pendingIntent = null
+        flag(true)
+        speakAndSettle(question)
+        machine.processEvent(AssistantEvent.OnCleanupComplete)
+        startListening()
+    }
+
+    fun confirmAction() {
+        val intent = pendingIntent ?: return
+        pendingIntent = null
+        _confirmationPrompt.value = ""
+        machine.processEvent(AssistantEvent.OnConfirmationReceived)
+        viewModelScope.launch { executeIntent(intent, _lastUtterance.value) }
+    }
+
+    fun denyAction() {
+        val hadPendingIntent = pendingIntent != null
+        pendingIntent = null
+        awaitingAlarmTime = false
+        awaitingTimerDuration = false
+        _confirmationPrompt.value = ""
+        if (hadPendingIntent) {
+            machine.processEvent(AssistantEvent.OnConfirmationDenied)
+        }
+        viewModelScope.launch {
+            speakAndSettle("Okay, cancelled.")
+            machine.processEvent(AssistantEvent.OnCleanupComplete)
+        }
+    }
+
+    private suspend fun executeIntent(intent: AppIntent, utterance: String) {
+        if (uiState.value !is AssistantUiState.Executing) {
+            // Direct (non-confirmed) path, e.g. a read-only status request.
+            machine.processEvent(AssistantEvent.OnIntentParsed(needsConfirmation = false))
+        }
+        machine.processEvent(AssistantEvent.OnExecutionStarted)
+        _statusMessage.value = "Executing the action…"
+
+        val response = try {
+            val result = when (intent) {
+                is AppIntent.ToggleFlashlight -> flashlightExecutor.execute(context, intent)
+                is AppIntent.SetAlarm -> alarmExecutor.execute(context, intent)
+                is AppIntent.SetTimer -> timerExecutor.execute(context, intent)
+                AppIntent.StatusReport -> statusExecutor.execute(context, intent)
+                is AppIntent.DeleteFile ->
+                    "File deletion is not available in this build, so nothing was deleted."
+                AppIntent.UnknownIntent -> "I didn't catch that."
+            }
+            logAction(intent, utterance, result)
+            result
+        } catch (error: Exception) {
+            val failure = error.message ?: "The action could not be completed"
+            _statusMessage.value = failure
+            logAction(intent, utterance, "failed: $failure")
+            "I couldn't complete that action: $failure"
+        }
+
+        speakAndSettle(response)
+        machine.processEvent(AssistantEvent.OnCleanupComplete)
+        refreshStatuses()
+    }
+
+    private suspend fun logAction(intent: AppIntent, utterance: String, outcome: String) {
+        runCatching {
+            memory.logAction(intent.javaClass.simpleName, utterance, outcome)
+        }
+    }
+
+    private fun handleOpenEndedRequest(userText: String) {
+        viewModelScope.launch {
+            if (userText.isBlank()) {
+                speakAndSettle("I didn't catch that. Please try again.")
+                machine.processEvent(AssistantEvent.OnCleanupComplete)
+                return@launch
+            }
+            if (localGenerationModelStore.installedModelPath() == null) {
+                speakAndSettle("I can answer open-ended questions after you import a local reply model.")
+                machine.processEvent(AssistantEvent.OnCleanupComplete)
+                return@launch
+            }
+
+            machine.processEvent(AssistantEvent.OnStartSpeaking)
+            _statusMessage.value = "Thinking with the on-device model…"
+            val reply = try {
+                localTextGenerator.generateReply(userText)
+            } catch (error: Exception) {
+                _replyModelStatus.value = "Local reply model could not be loaded"
+                _statusMessage.value = error.message ?: "Local generation failed"
+                "I couldn't load the local reply model. Please check the selected file."
+            }
+            _statusMessage.value = reply
+            speakText(reply)
+            machine.processEvent(AssistantEvent.OnCleanupComplete)
+        }
+    }
+
+    // --------------------------------------------------------------- teaching
+
+    /** Pairs the last spoken phrase with an action so the brain learns it. */
+    fun teachLastUtterance(actionLabel: String) {
+        val phrase = _lastUtterance.value.ifBlank { return }
+        teach(phrase, actionLabel)
+    }
+
+    fun teach(phrase: String, actionLabel: String) {
+        viewModelScope.launch {
+            try {
+                brain.teach(phrase, actionLabel)
+                _statusMessage.value = "Learned: \"$phrase\" → $actionLabel"
+                refreshStatuses()
+            } catch (error: Exception) {
+                _statusMessage.value = error.message ?: "Could not store that phrase"
+            }
+        }
+    }
+
+    fun forgetPhrase(phrase: String) {
+        viewModelScope.launch {
+            val removed = runCatching { memory.forget(phrase) }.getOrDefault(false)
+            _statusMessage.value = if (removed) "Forgot \"$phrase\"" else "That phrase was not stored"
+            refreshStatuses()
+        }
+    }
+
+    fun forgetAllPhrases() {
+        viewModelScope.launch {
+            runCatching { memory.forgetAll() }
+            _statusMessage.value = "Cleared every taught phrase"
+            refreshStatuses()
+        }
+    }
+
+    fun refreshMemory() {
+        viewModelScope.launch { refreshStatuses() }
+    }
+
+    // ----------------------------------------------------------------- voice
+
+    private suspend fun speakAndSettle(text: String) {
+        machine.processEvent(AssistantEvent.OnStartSpeaking)
+        if (uiState.value !is AssistantUiState.Speaking) {
+            // The machine already wound down to ReturnToIdle; still show the utterance.
+            machine.processEvent(AssistantEvent.OnStartSpeakingFromRest)
+        }
         _statusMessage.value = text
+        speakText(text)
+        machine.processEvent(AssistantEvent.OnSpeechSynthesisCompleted)
+    }
+
+    private suspend fun speakText(text: String) {
         val utteranceId = UUID.randomUUID().toString()
         val completion = viewModelScope.async(start = CoroutineStart.UNDISPATCHED) {
             withTimeoutOrNull(TTS_COMPLETION_TIMEOUT_MS) {
@@ -347,28 +576,46 @@ class AssistantViewModel @Inject constructor(
         }
         ttsController.speak(text, utteranceId)
         completion.await()
-        _uiState.value = AssistantUiState.Idle
     }
 
     private fun confirmationPrompt(intent: AppIntent): String = when (intent) {
-        is AppIntent.SetAlarm -> if (intent.time == null) {
-            "What time would you like to set the alarm for?"
-        } else {
-            "Do you want me to set the alarm for ${intent.time}?"
-        }
-        is AppIntent.DeleteFile -> "Are you sure you want to delete ${intent.fileName}?"
+        is AppIntent.SetAlarm -> "Do you want me to set the alarm for ${intent.time}?"
+        is AppIntent.SetTimer -> "Do you want me to start a timer for ${
+            intent.durationSeconds?.let(com.example.voiceassistant.nlp.DurationParser::describe) ?: ""
+        }?"
+        is AppIntent.DeleteFile -> "File deletion is not available in this build."
         is AppIntent.ToggleFlashlight ->
             "Do you want to turn the flashlight ${if (intent.isOn) "on" else "off"}?"
+        AppIntent.StatusReport -> "Do you want a device status report?"
         AppIntent.UnknownIntent -> "I didn't catch that."
     }
 
-    private companion object {
-        const val TTS_COMPLETION_TIMEOUT_MS = 8_000L
+    private fun fullReset(keepMessage: Boolean = false) {
+        awaitingConfirmationAnswer = false
+        pendingIntent = null
+        machine.processEvent(AssistantEvent.OnError)
+        viewModelScope.launch {
+            runCatching { audioCaptureSource.stop() }
+            sttIntegrator.stopTranscription(emitFinalResult = false)
+            machine.processEvent(AssistantEvent.OnCleanupComplete)
+        }
+        if (!keepMessage) _statusMessage.value = ""
+    }
+
+    fun clearStatusMessage() {
+        _statusMessage.value = ""
     }
 
     override fun onCleared() {
         sttIntegrator.releaseModel()
         audioCaptureSource.close()
         super.onCleared()
+    }
+
+    private companion object {
+        const val TTS_COMPLETION_TIMEOUT_MS = 8_000L
+
+        val AFFIRMATIVE = setOf("yes", "yeah", "yep", "confirm", "confirmed", "sure", "do", "ok", "okay")
+        val NEGATIVE = setOf("no", "nope", "cancel", "stop", "dont", "never", "abort")
     }
 }
