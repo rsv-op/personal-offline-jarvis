@@ -81,9 +81,40 @@ jobs:
           gradle-version: '8.14.6'
 
       - name: Run unit tests and assemble the APK
+        id: gradle
         env:
           JARVIS_VERSION_CODE: ${{ github.run_number }}
-        run: gradle --no-daemon --stacktrace :app:testDebugUnitTest :app:assembleDebug
+        run: |
+          set -o pipefail
+          gradle --no-daemon --stacktrace :app:testDebugUnitTest :app:assembleDebug 2>&1 | tee /tmp/gradle.log
+
+      - name: Surface the failure as a check annotation
+        # Gradle logs live behind a storage URL that some tooling cannot read; this step
+        # republishes the useful lines as a check-run annotation (readable via the API).
+        if: failure()
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          import re
+          import sys
+
+          log = pathlib.Path("/tmp/gradle.log")
+          if not log.is_file():
+              sys.exit(0)
+
+          lines = log.read_text(errors="replace").splitlines()
+          pattern = re.compile(
+              r"(^e: |^> Task .*FAILED|error: |error\[|FAILED|Execution failed|"
+              r"Caused by|AssertionError|expected:|actual:|Could not resolve|"
+              r"Unresolved reference|is not a function|Unnecessary non-null)"
+          )
+          digest = [line for line in lines if pattern.search(line)]
+          if not digest:
+              digest = lines[-40:]
+          text = "\n".join(digest[:80])[:6000]
+          escaped = text.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+          print(f"::error title=Gradle failure digest::{escaped}")
+          PY
 
       - name: Collect build outputs
         run: |

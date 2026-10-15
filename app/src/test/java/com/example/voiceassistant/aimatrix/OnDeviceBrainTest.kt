@@ -45,7 +45,8 @@ class OnDeviceBrainTest {
 
     @Test
     fun `device phrases are recognised by the bundled model`() = runTest {
-        val suggestion = assertNotNull(brain.suggest("switch the torch off"))
+        val suggestion = brain.suggest("switch the torch off")
+        assertNotNull(suggestion)
         assertEquals("FLASHLIGHT_OFF", suggestion!!.label)
         assertEquals(OnDeviceBrain.Source.MODEL, suggestion.source)
         assertTrue(suggestion.confidence > OnDeviceBrain.MODEL_CONFIDENCE_THRESHOLD)
@@ -68,7 +69,8 @@ class OnDeviceBrainTest {
 
         brain.teach("make it bright", "FLASHLIGHT_ON")
 
-        val suggestion = assertNotNull(brain.suggest("make it bright"))
+        val suggestion = brain.suggest("make it bright")
+        assertNotNull(suggestion)
         assertEquals("FLASHLIGHT_ON", suggestion!!.label)
         assertEquals(OnDeviceBrain.Source.TAUGHT, suggestion.source)
     }
@@ -76,7 +78,8 @@ class OnDeviceBrainTest {
     @Test
     fun `a taught phrase also matches close rephrasings`() = runTest {
         brain.teach("make it bright", "FLASHLIGHT_ON")
-        val suggestion = assertNotNull(brain.suggest("make it bright"))
+        val suggestion = brain.suggest("make it bright")
+        assertNotNull(suggestion)
         assertTrue(suggestion!!.confidence >= OnDeviceBrain.TAUGHT_MATCH_THRESHOLD)
     }
 
@@ -97,7 +100,8 @@ class OnDeviceBrainTest {
 
         val resilientBrain = OnDeviceBrain(FakeModelSource(classifierFromAsset()), JarvisMemory(brokenVault))
         // A corrupt memory document must not stop the model stage from answering.
-        val suggestion = assertNotNull(resilientBrain.suggest("turn on the flashlight"))
+        val suggestion = resilientBrain.suggest("turn on the flashlight")
+        assertNotNull(suggestion)
         assertEquals("FLASHLIGHT_ON", suggestion!!.label)
     }
 
@@ -106,6 +110,8 @@ class OnDeviceBrainTest {
         val offlineBrain = OnDeviceBrain(FakeModelSource(null), memory)
         assertNull(offlineBrain.suggest("turn on the flashlight"))
         offlineBrain.teach("make it bright", "FLASHLIGHT_ON")
-        assertEquals("FLASHLIGHT_ON", assertNotNull(offlineBrain.suggest("make it bright"))!!.label)
+        val suggestion = offlineBrain.suggest("make it bright")
+        assertNotNull(suggestion)
+        assertEquals("FLASHLIGHT_ON", suggestion!!.label)
     }
 }

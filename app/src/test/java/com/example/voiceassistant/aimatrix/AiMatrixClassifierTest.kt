@@ -64,7 +64,9 @@ class AiMatrixClassifierTest {
 
     @Test
     fun `metadata describes how the model was trained`() {
-        val metadata = assertNotNull(classifier.metadata).optJSONObject("metadata")
+        val root = classifier.metadata
+        assertNotNull("The exported model must carry metadata", root)
+        val metadata = root!!.optJSONObject("metadata")
         assertNotNull("The exported model must carry training metadata", metadata)
         assertTrue(metadata!!.optInt("trainingExamples") > 100)
         assertTrue("Held-out accuracy should stay above 90%", metadata.optDouble("holdoutAccuracy") >= 0.9)

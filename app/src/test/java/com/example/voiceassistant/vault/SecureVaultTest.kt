@@ -31,7 +31,8 @@ class SecureVaultTest {
         newVault()
         vault.write("memory", JSONObject().put("taught", 3))
 
-        val restored = assertNotNull(vault.read("memory"))
+        val restored = vault.read("memory")
+        assertNotNull(restored)
         assertEquals(3, restored!!.getInt("taught"))
     }
 

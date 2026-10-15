@@ -499,7 +499,6 @@ class AssistantViewModel @Inject constructor(
                 return@launch
             }
 
-            machine.processEvent(AssistantEvent.OnStartSpeaking)
             _statusMessage.value = "Thinking with the on-device model…"
             val reply = try {
                 localTextGenerator.generateReply(userText)
@@ -508,8 +507,9 @@ class AssistantViewModel @Inject constructor(
                 _statusMessage.value = error.message ?: "Local generation failed"
                 "I couldn't load the local reply model. Please check the selected file."
             }
-            _statusMessage.value = reply
-            speakText(reply)
+            // speakAndSettle always ends in ReturnToIdle, so the loop can never get stuck
+            // in Speaking if the synthesis engine reports nothing.
+            speakAndSettle(reply)
             machine.processEvent(AssistantEvent.OnCleanupComplete)
         }
     }
