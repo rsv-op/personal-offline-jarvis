@@ -6,6 +6,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import com.example.voiceassistant.nlp.NlpProcessor
 import com.example.voiceassistant.statemachine.AssistantUiState
@@ -57,9 +58,10 @@ class AssistantScreenTest {
         }
 
         composeTestRule.onNodeWithTag("ConfirmationPrompt")
+            .performScrollTo()
             .assertTextEquals("Do you want me to set the alarm for 07:00?")
-        composeTestRule.onNodeWithTag("ConfirmButton").performClick()
-        composeTestRule.onNodeWithTag("DenyButton").performClick()
+        composeTestRule.onNodeWithTag("ConfirmButton").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("DenyButton").performScrollTo().performClick()
         assertTrue(confirmed)
         assertTrue(denied)
     }
@@ -97,9 +99,13 @@ class AssistantScreenTest {
         }
 
         composeTestRule.onNodeWithTag("ModelStatusText")
+            .performScrollTo()
             .assertTextEquals("Offline speech model ready (41 MB)")
-        composeTestRule.onNodeWithTag("BrainStatusText").assertTextEquals("intent brain ready")
+        composeTestRule.onNodeWithTag("BrainStatusText")
+            .performScrollTo()
+            .assertTextEquals("intent brain ready")
         composeTestRule.onNodeWithTag("VaultStatusText")
+            .performScrollTo()
             .assertTextEquals("0 taught phrases • vault on StrongBox secure element")
     }
 
@@ -121,8 +127,10 @@ class AssistantScreenTest {
             )
         }
 
-        composeTestRule.onNodeWithTag("TeachPhraseField").performTextInput("make it bright")
-        composeTestRule.onNodeWithTag("Teach_FLASHLIGHT_ON").performClick()
+        composeTestRule.onNodeWithTag("TeachPhraseField")
+            .performScrollTo()
+            .performTextInput("make it bright")
+        composeTestRule.onNodeWithTag("Teach_FLASHLIGHT_ON").performScrollTo().performClick()
 
         assertEquals("make it bright", taughtPhrase)
         assertEquals("FLASHLIGHT_ON", taughtLabel)
@@ -145,8 +153,8 @@ class AssistantScreenTest {
             )
         }
 
-        composeTestRule.onNodeWithTag("ForgetAllButton").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("Forget_make it bright").performClick()
+        composeTestRule.onNodeWithTag("ForgetAllButton").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("Forget_make it bright").performScrollTo().performClick()
         assertEquals("make it bright", forgotten)
     }
 
@@ -168,9 +176,9 @@ class AssistantScreenTest {
             )
         }
 
-        composeTestRule.onNodeWithTag("InstallModelButton").performClick()
-        composeTestRule.onNodeWithTag("InstallArchiveButton").performClick()
-        composeTestRule.onNodeWithTag("InstallReplyModelButton").performClick()
+        composeTestRule.onNodeWithTag("InstallModelButton").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("InstallArchiveButton").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("InstallReplyModelButton").performScrollTo().performClick()
 
         assertTrue(folder)
         assertTrue(archive)
@@ -190,6 +198,7 @@ class AssistantScreenTest {
             )
         }
         composeTestRule.onNodeWithTag("IntentSourceText")
+            .performScrollTo()
             .assertTextEquals("matched a phrase you taught me")
     }
 }

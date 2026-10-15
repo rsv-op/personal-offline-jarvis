@@ -90,28 +90,44 @@ jobs:
 
       - name: Surface the failure as a check annotation
         # Gradle logs live behind a storage URL that some tooling cannot read; this step
-        # republishes the useful lines as a check-run annotation (readable via the API).
+        # republishes the useful lines (and the JUnit failure messages) as annotations.
         if: failure()
         run: |
           python3 - <<'PY'
           import pathlib
           import re
           import sys
+          import xml.etree.ElementTree as ET
+
+          digest = []
+
+          results = pathlib.Path("app/build/test-results/testDebugUnitTest")
+          if results.is_dir():
+              for report in sorted(results.glob("*.xml")):
+                  try:
+                      tree = ET.parse(report)
+                  except Exception:
+                      continue
+                  for case in tree.iter("testcase"):
+                      for problem in list(case.findall("failure")) + list(case.findall("error")):
+                          digest.append(f"{case.get('classname')}.{case.get('name')}: {problem.get('message')}")
+                          body = (problem.text or "").strip().splitlines()
+                          digest.extend(line.strip() for line in body[:4])
 
           log = pathlib.Path("/tmp/gradle.log")
-          if not log.is_file():
-              sys.exit(0)
+          if log.is_file():
+              pattern = re.compile(
+                  r"(^e: |^> Task .*FAILED|error: |error\[|Execution failed|Caused by|"
+                  r"Unresolved reference|Could not resolve|Could not find |is not a function)"
+              )
+              digest.extend(
+                  line for line in log.read_text(errors="replace").splitlines() if pattern.search(line)
+              )
 
-          lines = log.read_text(errors="replace").splitlines()
-          pattern = re.compile(
-              r"(^e: |^> Task .*FAILED|error: |error\[|FAILED|Execution failed|"
-              r"Caused by|AssertionError|expected:|actual:|Could not resolve|"
-              r"Unresolved reference|is not a function|Unnecessary non-null)"
-          )
-          digest = [line for line in lines if pattern.search(line)]
           if not digest:
-              digest = lines[-40:]
-          text = "\n".join(digest[:80])[:6000]
+              digest = ["Gradle failed; no digest could be extracted."]
+
+          text = "\n".join(digest)[:20000]
           escaped = text.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
           print(f"::error title=Gradle failure digest::{escaped}")
           PY

@@ -193,7 +193,8 @@ class AssistantViewModelTest {
             speak(eq("What time would you like the alarm for?"), any())
         }
         verifyBlocking(mockAlarmExecutor, never()) { execute(mockContext, intent) }
-        assertEquals(AssistantUiState.Idle, viewModel.uiState.value)
+        // The follow-up is a voice loop: the assistant asks, then listens for the answer.
+        assertEquals(AssistantUiState.Listening, viewModel.uiState.value)
     }
 
     @Test

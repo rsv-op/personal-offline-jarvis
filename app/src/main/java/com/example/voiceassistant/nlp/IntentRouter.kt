@@ -32,9 +32,18 @@ class IntentRouter {
     private val offWords = listOf("off", "out", "kill", "disable", "stop", "shut", "dark", "dim")
     private val onWords = listOf("on", "enable", "start", "bright", "light up", "power up")
 
-    private val stopWords = setOf(
-        "the", "my", "this", "that", "a", "an", "it", "file", "files", "document",
-        "documents", "note", "notes", "download", "downloads", "draft", "please", "named", "called"
+    private val articles = setOf(
+        "the", "my", "this", "that", "a", "an", "it", "please", "named", "called",
+        "your", "our", "their"
+    )
+
+    private val fileTypeWords = setOf(
+        "file", "files", "document", "documents", "note", "notes", "download",
+        "downloads", "draft", "photo", "photos"
+    )
+
+    private val deleteVerbs = setOf(
+        "delete", "erase", "remove", "wipe", "throw", "away", "get", "rid", "of", "trash"
     )
 
     private val timeMap = linkedMapOf(
@@ -118,10 +127,22 @@ class IntentRouter {
         return "${hour.toString().padStart(2, '0')}:$minutes${if (amPm.isNotEmpty()) " $amPm" else ""}"
     }
 
-    /** Best-effort file name for the (intentionally unexecuted) delete intent. */
+    /**
+     * Best-effort file name for the (intentionally unexecuted) delete intent.
+     *
+     * "delete my notes file" -> "notes", "remove file named report" -> "report",
+     * "delete the download" -> "download".
+     */
     fun guessFileName(text: String): String {
-        val words = text.split(' ').filter { it.isNotBlank() && it !in stopWords }
-        return words.lastOrNull() ?: "that file"
+        val words = text.split(' ').filter(String::isNotBlank)
+
+        for (index in words.indices) {
+            if (words[index] !in fileTypeWords || index == 0) continue
+            val candidate = words[index - 1]
+            if (candidate !in articles && candidate !in deleteVerbs) return candidate
+        }
+
+        return words.lastOrNull { it !in articles && it !in deleteVerbs } ?: "that file"
     }
 
     private fun String.containsWholeWord(word: String): Boolean =

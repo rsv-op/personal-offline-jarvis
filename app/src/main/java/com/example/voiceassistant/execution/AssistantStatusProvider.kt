@@ -35,8 +35,8 @@ class AssistantStatusProvider @Inject constructor(
                 "The intent brain is unavailable: ${modelStore.lastError ?: "the bundled model is missing"}."
             else -> {
                 val metadata = classifier.metadata
-                val examples = metadata?.optJSONObject("metadata")?.optInt("trainingExamples") ?: 0
-                val accuracy = metadata?.optJSONObject("metadata")?.optDouble("holdoutAccuracy", 0.0) ?: 0.0
+                val examples = metadata?.optInt("trainingExamples") ?: 0
+                val accuracy = metadata?.optDouble("holdoutAccuracy", 0.0) ?: 0.0
                 if (examples > 0) {
                     "The intent brain is ready: $examples training phrases, " +
                         "${(accuracy * 100).toInt()} percent accuracy on phrases it had not heard before."

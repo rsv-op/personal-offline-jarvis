@@ -102,7 +102,13 @@ class AssistantUiStateMachine(
                 else -> null
             }
             is AssistantEvent.OnIntentParsed -> when (current) {
-                AssistantUiState.Processing, AssistantUiState.ReturnToIdle ->
+                // Idle/WakeDetected are accepted too: an intent can be produced without a
+                // listen phase (a restored request, a test, a future wake word), and the
+                // confirmation gate must still be raised rather than dropped.
+                AssistantUiState.Processing,
+                AssistantUiState.ReturnToIdle,
+                AssistantUiState.Idle,
+                AssistantUiState.WakeDetected ->
                     if (event.needsConfirmation) {
                         AssistantUiState.NeedsConfirmation
                     } else {
@@ -123,6 +129,7 @@ class AssistantUiStateMachine(
                 else -> null
             }
             AssistantEvent.OnStartSpeaking -> when (current) {
+                AssistantUiState.Idle,
                 AssistantUiState.Listening,
                 AssistantUiState.WakeDetected,
                 AssistantUiState.Processing,

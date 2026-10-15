@@ -371,13 +371,16 @@ class AssistantViewModel @Inject constructor(
     fun onIntentParsed(parsed: NlpProcessor.OnIntentParsed, originalUtterance: String? = null) {
         viewModelScope.launch {
             _intentSource.value = parsed.source
+            val utterance = originalUtterance.orEmpty()
+
             when (val intent = parsed.intent) {
                 is AppIntent.SetAlarm -> if (intent.time == null) {
                     askForMissingDetail(
                         question = "What time would you like the alarm for?",
                         flag = { awaitingAlarmTime = it }
                     )
-                    return@launch
+                } else {
+                    resolveAction(intent, parsed.needsConfirmation, utterance)
                 }
 
                 is AppIntent.SetTimer -> if (intent.durationSeconds == null) {
@@ -385,10 +388,11 @@ class AssistantViewModel @Inject constructor(
                         question = "How long should the timer run?",
                         flag = { awaitingTimerDuration = it }
                     )
-                    return@launch
+                } else {
+                    resolveAction(intent, parsed.needsConfirmation, utterance)
                 }
 
-                is AppIntent.UnknownIntent -> handleOpenEndedRequest(originalUtterance.orEmpty())
+                is AppIntent.UnknownIntent -> handleOpenEndedRequest(utterance)
 
                 // Deletion is deliberately unimplemented, so there is nothing to confirm:
                 // the assistant explains the limitation and keeps zero file permissions.
@@ -400,21 +404,32 @@ class AssistantViewModel @Inject constructor(
                     machine.processEvent(AssistantEvent.OnCleanupComplete)
                 }
 
-                else -> {
-                    if (!parsed.needsConfirmation) {
-                        machine.processEvent(AssistantEvent.OnIntentParsed(needsConfirmation = false))
-                        executeIntent(intent, originalUtterance.orEmpty())
-                        return@launch
-                    }
-                    pendingIntent = intent
-                    val prompt = confirmationPrompt(intent)
-                    _confirmationPrompt.value = prompt
-                    speakAndSettle(prompt)
-                    machine.processEvent(AssistantEvent.OnIntentParsed(needsConfirmation = true))
-                    _statusMessage.value = "Say yes, or tap Confirm."
-                }
+                else -> resolveAction(intent, parsed.needsConfirmation, utterance)
             }
         }
+    }
+
+    /**
+     * The confirmation gate. Everything that can change the device goes through here:
+     * either it is confirmed out loud / by tap first, or it never runs.
+     */
+    private suspend fun resolveAction(
+        intent: AppIntent,
+        needsConfirmation: Boolean,
+        utterance: String
+    ) {
+        if (!needsConfirmation) {
+            machine.processEvent(AssistantEvent.OnIntentParsed(needsConfirmation = false))
+            executeIntent(intent, utterance)
+            return
+        }
+
+        pendingIntent = intent
+        val prompt = confirmationPrompt(intent)
+        _confirmationPrompt.value = prompt
+        speakAndSettle(prompt)
+        machine.processEvent(AssistantEvent.OnIntentParsed(needsConfirmation = true))
+        _statusMessage.value = "Say yes, or tap Confirm."
     }
 
     private suspend fun askForMissingDetail(question: String, flag: (Boolean) -> Unit) {
