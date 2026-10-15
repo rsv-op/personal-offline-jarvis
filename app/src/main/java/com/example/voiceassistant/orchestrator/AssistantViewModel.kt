@@ -254,7 +254,12 @@ class AssistantViewModel @Inject constructor(
             try {
                 if (loadedModelPath != modelPath) {
                     if (!sttIntegrator.initializeModel(modelPath)) {
-                        throw IllegalStateException("Could not initialize the offline speech model")
+                        // Surface the engine's own reason (missing files, unreadable model,
+                        // wrong format) rather than a generic failure.
+                        throw IllegalStateException(
+                            sttIntegrator.lastInitializationError
+                                ?: "Could not initialize the offline speech model"
+                        )
                     }
                     loadedModelPath = modelPath
                 }

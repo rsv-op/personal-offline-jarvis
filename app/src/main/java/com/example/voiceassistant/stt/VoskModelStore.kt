@@ -23,8 +23,10 @@ import javax.inject.Singleton
  *    with zip-slip protection and a size budget).
  *  * [importModelTree] — an already extracted folder, via the folder picker.
  *
- * Both validate that the result really is a Vosk model (`conf/model.conf`) and install
- * it atomically, keeping the previous model until the new one is complete.
+ * Both validate that the result really is a *usable* Vosk model — a non-empty
+ * `conf/model.conf` plus a real payload, never just the presence of a file name that an
+ * empty extraction also produces — and install it atomically, keeping the previous model
+ * until the new one is complete.
  */
 @Singleton
 class VoskModelStore @Inject constructor(
@@ -35,12 +37,12 @@ class VoskModelStore @Inject constructor(
     private val stagingDirectory = File(modelsDirectory, "vosk-import-staging")
 
     fun installedModelPath(): String? =
-        installedDirectory.takeIf(::isVoskModelDirectory)?.absolutePath
+        installedDirectory.takeIf(ModelArchiveExtractor::isModelDirectory)?.absolutePath
 
     /** Human-readable size of the installed model, or `null` when none is installed. */
     fun installedModelSizeMb(): Double? =
-        installedDirectory.takeIf(::isVoskModelDirectory)
-            ?.let { directory -> directory.walkTopDown().filter(File::isFile).sumOf(File::length) }
+        installedDirectory.takeIf(ModelArchiveExtractor::isModelDirectory)
+            ?.let(ModelArchiveExtractor::modelSizeBytes)
             ?.let { bytes -> bytes / (1024.0 * 1024.0) }
 
     /** Imports a `.zip` (or `.tar`-less archive) downloaded from the Vosk model catalog. */
@@ -48,18 +50,16 @@ class VoskModelStore @Inject constructor(
         requireArchiveName(uri)
         prepareStaging()
         try {
-            val budget = CopyBudget(MAX_MODEL_BYTES)
+            val budget = ModelArchiveExtractor.Budget()
             val input = context.contentResolver.openInputStream(uri)
                 ?: throw IllegalArgumentException("Could not read the selected archive")
             input.use { stream ->
                 ZipInputStream(stream.buffered()).use { zip ->
-                    extractArchive(zip, stagingDirectory, budget)
+                    ModelArchiveExtractor.extract(zip, stagingDirectory, budget)
                 }
             }
-            val modelRoot = findModelRoot(stagingDirectory)
-                ?: throw IllegalArgumentException(
-                    "No Vosk model found in that archive. Expected a folder containing conf/model.conf."
-                )
+            val modelRoot = ModelArchiveExtractor.findModelRoot(stagingDirectory)
+                ?: throw IllegalArgumentException(ModelArchiveExtractor.describeRejection(stagingDirectory))
             install(modelRoot)
         } finally {
             stagingDirectory.deleteRecursively()
@@ -74,12 +74,10 @@ class VoskModelStore @Inject constructor(
 
         prepareStaging()
         try {
-            val budget = CopyBudget(MAX_MODEL_BYTES)
+            val budget = ModelArchiveExtractor.Budget()
             copyChildren(source, stagingDirectory, budget)
-            val modelRoot = findModelRoot(stagingDirectory)
-                ?: throw IllegalArgumentException(
-                    "No Vosk model found. Select a folder containing conf/model.conf."
-                )
+            val modelRoot = ModelArchiveExtractor.findModelRoot(stagingDirectory)
+                ?: throw IllegalArgumentException(ModelArchiveExtractor.describeRejection(stagingDirectory))
             install(modelRoot)
         } finally {
             stagingDirectory.deleteRecursively()
@@ -92,7 +90,10 @@ class VoskModelStore @Inject constructor(
         val replacement = File(modelsDirectory, "vosk-model-new")
         replacement.deleteRecursively()
         modelRoot.copyRecursively(replacement, overwrite = true)
-        check(isVoskModelDirectory(replacement)) { "The selected folder is not a valid Vosk model" }
+        check(ModelArchiveExtractor.isModelDirectory(replacement)) {
+            "The selected model is incomplete: conf/model.conf is missing or empty, or the " +
+                "model contains no data."
+        }
 
         val backup = File(modelsDirectory, "vosk-model-old")
         backup.deleteRecursively()
@@ -115,52 +116,6 @@ class VoskModelStore @Inject constructor(
         check(stagingDirectory.mkdirs()) { "Could not create the model import staging folder" }
     }
 
-    // -------------------------------------------------------------------- zip
-
-    private fun extractArchive(zip: ZipInputStream, destination: File, budget: CopyBudget) {
-        var entryCount = 0
-        while (true) {
-            val entry = zip.nextEntry ?: break
-            if (++entryCount > MAX_ARCHIVE_ENTRIES) {
-                error("Archive contains too many files to be a speech model")
-            }
-            val name = entry.name.replace('\\', '/').trim()
-            zip.closeEntry()
-
-            if (name.isEmpty() || name.endsWith("/")) {
-                if (name.isNotEmpty()) {
-                    resolveSafely(destination, name)?.mkdirs()
-                }
-                continue
-            }
-            val target = resolveSafely(destination, name)
-                ?: throw IllegalArgumentException("Archive entry escapes the model folder: $name")
-            target.parentFile?.mkdirs()
-            target.outputStream().buffered().use { output ->
-                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                while (true) {
-                    val read = zip.read(buffer)
-                    if (read < 0) break
-                    budget.add(read)
-                    output.write(buffer, 0, read)
-                }
-            }
-        }
-    }
-
-    /** Resolves a zip entry inside `destination`, rejecting absolute paths and `..` escapes. */
-    private fun resolveSafely(destination: File, entryName: String): File? {
-        if (entryName.startsWith("/") || entryName.contains(":")) return null
-        if (entryName.contains('\u0000')) return null
-        val target = File(destination, entryName)
-        val canonicalDestination = destination.canonicalPath + File.separator
-        return try {
-            if (target.canonicalPath.startsWith(canonicalDestination)) target else null
-        } catch (_: java.io.IOException) {
-            null
-        }
-    }
-
     private fun requireArchiveName(uri: Uri) {
         val displayName = context.contentResolver.query(
             uri,
@@ -181,7 +136,11 @@ class VoskModelStore @Inject constructor(
 
     // --------------------------------------------------------------- documents
 
-    private fun copyChildren(source: DocumentFile, destination: File, budget: CopyBudget) {
+    private fun copyChildren(
+        source: DocumentFile,
+        destination: File,
+        budget: ModelArchiveExtractor.Budget
+    ) {
         for (child in source.listFiles()) {
             val name = child.name ?: continue
             require(name != "." && name != ".." && '/' !in name && '\\' !in name) {
@@ -199,7 +158,11 @@ class VoskModelStore @Inject constructor(
         }
     }
 
-    private fun copyLimited(input: InputStream, destination: File, budget: CopyBudget) {
+    private fun copyLimited(
+        input: InputStream,
+        destination: File,
+        budget: ModelArchiveExtractor.Budget
+    ) {
         destination.outputStream().buffered().use { output ->
             val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
             while (true) {
@@ -211,30 +174,4 @@ class VoskModelStore @Inject constructor(
         }
     }
 
-    private fun findModelRoot(start: File): File? {
-        if (isVoskModelDirectory(start)) return start
-        return start.walkTopDown()
-            .maxDepth(MAX_SEARCH_DEPTH)
-            .firstOrNull(::isVoskModelDirectory)
-    }
-
-    private fun isVoskModelDirectory(directory: File): Boolean =
-        directory.isDirectory && File(directory, "conf/model.conf").isFile
-
-    private class CopyBudget(private val limitBytes: Long) {
-        private var copiedBytes = 0L
-
-        fun add(bytes: Int) {
-            copiedBytes += bytes
-            require(copiedBytes <= limitBytes) {
-                "Model exceeds the ${limitBytes / (1024 * 1024)} MB import limit"
-            }
-        }
-    }
-
-    private companion object {
-        const val MAX_MODEL_BYTES = 2_000_000_000L
-        const val MAX_SEARCH_DEPTH = 6
-        const val MAX_ARCHIVE_ENTRIES = 5_000
-    }
 }

@@ -40,6 +40,9 @@ The speech model is intentionally **not** bundled — it is large and licensed s
    (Android's Files app cannot), validates it, and copies it into private storage, so
    nothing else on the phone can read it.
    *Already extracted the archive on a computer?* Use **Import model folder** instead.
+   After a good import the status line reports the model size (about **41 MB** for the
+   small English model). A missing or `0 MB` size means the import did not land, and the
+   assistant refuses to listen with an incomplete model rather than failing later.
 3. **Import local reply model** is optional: it accepts a `.litertlm` file (for example a
    Gemma 3 1B IT LiteRT-LM model) for open-ended chit-chat. Without it, commands still
    work and open-ended questions get a short explanation.

@@ -25,6 +25,15 @@ class OfflineSttIntegrator(
     private val isInitialized = AtomicBoolean(false)
     private val isTranscribing = AtomicBoolean(false)
 
+    /**
+     * Why the last initialization attempt failed, or `null` if it succeeded. The caller
+     * surfaces this instead of a generic "could not initialize" message, so a broken model
+     * import is diagnosable from the phone alone.
+     */
+    @Volatile
+    var lastInitializationError: String? = null
+        private set
+
     fun loadModel(modelPath: String) {
         scope.launch { initializeModel(modelPath) }
     }
@@ -33,11 +42,13 @@ class OfflineSttIntegrator(
         try {
             engine.initialize(modelPath)
             isInitialized.set(true)
+            lastInitializationError = null
             true
         } catch (e: Exception) {
-            eventDispatcher(SttEvent.OnError(
-                Exception("Failed to initialize STT model: ${e.message}", e)
-            ))
+            val reason = e.message ?: e::class.java.simpleName
+            val message = "Failed to load the offline speech model: $reason"
+            lastInitializationError = message
+            eventDispatcher(SttEvent.OnError(Exception(message, e)))
             false
         }
     }
