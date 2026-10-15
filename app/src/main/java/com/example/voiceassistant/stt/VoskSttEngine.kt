@@ -17,10 +17,11 @@ class VoskSttEngine : SttEngine {
     override fun initialize(modelPath: String) {
         release()
         val modelDirectory = File(modelPath)
-        require(modelDirectory.isDirectory) { "STT model directory does not exist: $modelPath" }
-        require(File(modelDirectory, "conf/model.conf").isFile) {
-            "Not a Vosk model directory (conf/model.conf is missing)"
-        }
+        // Validate the *contents*, not just the file names: an import that wrote empty files
+        // used to pass a "does conf/model.conf exist" check and only blew up inside the
+        // native loader, which surfaced as a generic "could not initialise" message.
+        val problem = ModelArchiveExtractor.describeModelProblem(modelDirectory)
+        require(problem == null) { "Not a usable Vosk model at $modelPath: $problem" }
 
         val loadedModel = Model(modelDirectory.absolutePath)
         try {
