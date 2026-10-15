@@ -192,18 +192,18 @@ class ModelArchiveExtractorTest {
         // STORED requires both size and CRC32 in the local file header. CRC32 is computed
         // by streaming the source over the byte sequence the writer will produce — the
         // zip layer doesn't add or change bytes, it just frames them.
-        val crc = java.util.zip.CRC32()
+        val crc32 = java.util.zip.CRC32()
         var remainingForCrc = modelBytes
         while (remainingForCrc > 0) {
             val chunkSize = if (remainingForCrc >= source.size) source.size else remainingForCrc.toInt()
-            crc.update(source, 0, chunkSize)
+            crc32.update(source, 0, chunkSize)
             remainingForCrc -= chunkSize
         }
         ZipOutputStream(FileOutputStream(target)).use { zip ->
             zip.putNextEntry(
                 ZipEntry("am/final.mdl").apply {
                     size = modelBytes
-                    crc = crc.value
+                    crc = crc32.value
                     method = ZipEntry.STORED
                 }
             )
