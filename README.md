@@ -1,45 +1,153 @@
-# JARVIS — Local-First Android Assistant
+# JARVIS — a fully offline Android voice assistant
 
-A local-first Android voice assistant with push-to-talk, on-device speech recognition, deterministic intent routing, confirmation-gated actions, optional on-device generative replies, and spoken/UI feedback.
+A single Android app (package `com.example.voiceassistant`, label **JARVIS**) that listens,
+understands, confirms and acts — entirely on your phone. Speech recognition, the intent
+brain and the encrypted memory all run locally. **The app does not hold the `INTERNET`
+permission at all**, so it cannot send your voice anywhere even if it tried.
 
-## Offline voice loop
+| Piece | What it does | Runs on |
+| --- | --- | --- |
+| Vosk (`stt/`) | Speech → text, 16 kHz mono, no network | Your phone |
+| ai-matrix (`ai-matrix/`, `aimatrix/`) | Phrase → intent, a 131k-parameter neural net | Trained on a laptop, **runs** on your phone |
+| Rules (`nlp/`) | Alarm times, timer durations, on/off polarity | Your phone |
+| Vault (`vault/`) | Taught phrases + preferences, AES-GCM under a StrongBox/TEE key | Your phone |
+| Android `TextToSpeech` | Replies out loud (install an offline voice pack) | Your phone |
+| LiteRT-LM (`generation/`) | *Optional* open-ended answers from a `.litertlm` model you import | Your phone |
 
-1. Tap the orb and speak; the app captures 16 kHz mono audio from the microphone.
-2. Vosk recognizes speech locally on-device.
-3. The deterministic intent router handles supported flashlight and alarm requests. Every device-changing action requires an explicit confirm/cancel choice; a missing alarm time is collected as a voice follow-up.
-4. The assistant speaks the result through Android TextToSpeech and shows the transcript/status in the UI.
+## 1. Get it onto your phone
 
-The Vosk speech model is intentionally not bundled in Git or the APK because model files are large. Obtain an Android-compatible model from the [Vosk model catalog](https://alphacephei.com/vosk/models), extract or transfer it to the device, then tap **Import speech model folder** and select the model directory or a parent directory containing it. The selected tree must include `conf/model.conf`; it is copied into the app's private storage. Recognition itself makes no network requests. The 16 kHz small English model is a practical starting point.
+Everything below happens on the phone; you never need a computer.
 
-## On-device generative replies
+1. Open **`https://github.com/rsv-op/personal-offline-jarvis/releases/latest`** in your
+   phone's browser and download `jarvis-offline-debug.apk`.
+   *No release yet?* Open the **Actions** tab → newest green **Build** → *Artifacts* →
+   `personal-offline-jarvis-apk`. (Both are the same file.)
+2. Tap the downloaded file. Android will ask to allow installs from this source — accept
+   it (Settings → Apps → Special access → Install unknown apps → your browser).
+3. If Android marks the APK as unsigned, it is only ever the *first*, not the last, build:
+   the signed debug APK installs over itself as long as you keep installing from this
+   repository.
+4. Open **JARVIS** and grant the microphone and camera permissions (microphone for
+   speech, camera for the flashlight torch).
 
-Open-ended utterances that do not match a supported deterministic intent can be answered by LiteRT-LM on the device's CPU. The generative model is conversational only: it receives no action tools, cannot route or execute device commands, and is never used in place of the confirmation flow.
+## 2. Give it a voice (one-time, ~40 MB)
 
-The reply model is also user-provisioned rather than bundled. Transfer a compatible `.litertlm` model file to the device and tap **Import local reply model**. A Gemma 3 1B instruction-tuned LiteRT-LM model is a reference starting point; model size and speed depend on the file and device. The imported file is copied to private app storage, and inference makes no network requests. If no local reply model is installed, recognized device commands still work and open-ended requests receive an install-model prompt.
+The speech model is intentionally **not** bundled — it is large and licensed separately.
 
-The speech model, generative model, and Android TTS voice are separate. For spoken replies to remain offline, install/select an on-device TTS voice in Android settings. The app does not download these resources.
+1. On the phone, open <https://alphacephei.com/vosk/models> and download
+   **`vosk-model-small-en-us-0.15.zip`** (about 40 MB).
+2. In JARVIS tap **Import model .zip** and pick that file. The app unzips it itself
+   (Android's Files app cannot), validates it, and copies it into private storage, so
+   nothing else on the phone can read it.
+   *Already extracted the archive on a computer?* Use **Import model folder** instead.
+3. **Import local reply model** is optional: it accepts a `.litertlm` file (for example a
+   Gemma 3 1B IT LiteRT-LM model) for open-ended chit-chat. Without it, commands still
+   work and open-ended questions get a short explanation.
 
-## Supported behavior and safety
+For spoken replies to stay offline, install an on-device TTS voice in
+**Settings → System → Languages & input → Text-to-speech** and pick an offline voice.
 
-- Flashlight on/off is routed to the Android action executor.
-- Alarm requests use Android's alarm intent integration.
-- All device-changing actions require explicit confirmation.
-- `DeleteFile` remains intentionally unexecuted; the assistant explains that file deletion is unavailable rather than deleting data.
-- The orb is a manual push-to-talk control. Always-on wake-word detection is not implemented.
-- The generative model handles only open-ended conversation; it cannot operate the device.
+## 3. Use it
 
-## Project layout
+| You say | What happens |
+| --- | --- |
+| "turn on the flashlight" / "switch the torch off" | Asks "Do you want to turn the flashlight on?" → tap **Confirm** or say **yes** |
+| "set an alarm for seven thirty am" | Confirms, then hands the time to your clock app |
+| "set a timer for ten minutes" | Confirms, then starts the timer |
+| "how much battery is left" | Answers straight away (read-only, no confirmation) |
+| "delete my notes file" | Explains that file deletion is unavailable — nothing is deleted |
+| anything else | The intent brain tries to route it; if it cannot, you get the local reply model or an explanation |
 
-- `app/src/main/java/com/example/voiceassistant/` — app entry points and Kotlin implementation.
-- `app/src/test/java/com/example/voiceassistant/` — unit and Compose tests.
-- `project_structure.md` — full file map.
+Tap the orb to start listening, tap again to stop. While a confirmation is on screen you
+can tap the orb and answer **yes** / **cancel** with your voice.
 
-## Build
+**Teach it your own wording.** In the *Teach JARVIS* panel, type a phrase (e.g. "make it
+bright"), tap the action it should trigger, and from then on that phrase — and close
+rephrasings of it — route to that action. Taught phrases live in the encrypted vault and
+are checked *before* the neural network. Every confirmed action is appended to an
+auditable action log, capped at 50 entries.
 
-Requirements: JDK 21, Android SDK 34, and Gradle 8.14.6. The Android/Kotlin bytecode targets remain Java 17; JDK 21 is required for the LiteRT-LM build-time tooling.
+## 4. How the intent brain works
 
-```sh
-gradle :app:testDebugUnitTest :app:assembleDebug
+```
+"make it bright"
+      │
+      ├─ rules (nlp/IntentRouter)         ── exact, unambiguous phrasing
+      ├─ taught phrases (vault + cosine)  ── your own wording, learned on the phone
+      └─ ai-matrix neural network         ── 4096 hashed features → 32 ReLU → 7 intents
+                    │
+                    ▼
+             confirmation gate  ──▶  executor  ──▶  speech + vault log
 ```
 
-The GitHub Actions workflow runs the same unit-test and debug-APK tasks.
+`ai-matrix/` is a small NumPy project (35 pytest tests) that trains the network and
+exports it to `app/src/main/assets/ai_matrix_model.json` (~655 KiB). The Kotlin port
+(`aimatrix/`) runs the identical featurization and forward pass on the phone; the
+Python-generated `tests/golden_features.json` snapshot pins both implementations to the
+same buckets, so the two halves cannot silently drift apart. Held-out accuracy on
+phrasing the model never saw during training: **0.93**.
+
+## 5. Safety model
+
+* Every state-changing intent (`ToggleFlashlight`, `SetAlarm`, `SetTimer`, `DeleteFile`)
+  requires an explicit confirmation — tap or spoken "yes". The brain can only ever
+  *suggest* a label; it cannot execute anything.
+* `DeleteFile` is parsed and confirmed but has no executor: the assistant says deletion is
+  unavailable instead of touching your files.
+* Parameters (alarm times, timer durations) come from deterministic parsers, never from
+  the classifier.
+* No `INTERNET` permission; no analytics; no cloud fallback.
+* The vault key is generated inside the Android Keystore (StrongBox when available) and is
+  non-exportable. Losing the key means losing the vault contents — that is the point.
+
+## 6. Build it yourself
+
+Requirements: JDK 21 for the tooling (bytecode stays Java 17), Android SDK **API 36**, and
+Gradle 8.14.6.
+
+```sh
+# the intent brain (Python 3.10+, numpy)
+cd ai-matrix
+python -m pip install -r requirements.txt
+python -m pytest tests -q          # 35 tests
+python -m ai_matrix.cli export     # rewrite app/src/main/assets/ai_matrix_model.json
+
+# the Android app
+cd ..
+gradle :app:testDebugUnitTest :app:assembleDebug
+# output: app/build/outputs/apk/debug/app-debug.apk
+```
+
+CI (`.github/workflows/build.yml`) runs both jobs on every push and pull request: the
+Python suite, then the Kotlin unit tests and the APK build. Builds on `main`, tags and
+manual runs additionally publish the APK to the `jarvis-latest` release, and the debug
+keystore is cached so each new APK installs over the previous one.
+
+## 7. Project layout
+
+```
+ai-matrix/            NumPy intent brain: features, model, training CLI, pytest suite
+app/src/main/
+├── assets/ai_matrix_model.json      trained weights bundled in the APK
+├── java/com/example/voiceassistant/
+│   ├── aimatrix/     Kotlin featurizer, MLP forward pass, bootstrapped brain
+│   ├── execution/    executors (flashlight, alarm, timer, status), TTS, status provider
+│   ├── generation/   optional LiteRT-LM conversational replies
+│   ├── nlp/          normalizer, intent router, duration parser, two-stage processor
+│   ├── orchestrator/ Hilt module + AssistantViewModel (the voice loop)
+│   ├── statemachine/ AssistantUiStateMachine
+│   ├── stt/          Vosk engine, audio capture, model import (folder or .zip)
+│   ├── ui/           Compose screen (orb, confirmation card, teach panel)
+│   └── vault/        SecureVault (AES-GCM) + JarvisMemory
+└── res/              adaptive icon, dark theme
+```
+
+## 8. Known limits
+
+* **Not** always-on: there is no wake word; the orb is push-to-talk.
+* Offline speech recognition is good, not perfect — that is why device actions are
+  confirmed, and why you can teach the assistant your own phrasing.
+* Alarms and timers are handed to your clock app; the app itself does not keep a
+  scheduler.
+* The optional LiteRT-LM reply model is slow on 1B-class models and is never allowed to
+  trigger actions.

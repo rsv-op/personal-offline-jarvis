@@ -3,34 +3,181 @@ name: Build
 on:
   push:
     branches: [ "main" ]
+    tags: [ "v*" ]
   pull_request:
     branches: [ "main" ]
   workflow_dispatch:
+    inputs:
+      publish_release:
+        description: "Attach the built APK to the 'jarvis-latest' GitHub release"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
 
 jobs:
+  ai-matrix:
+    name: ai-matrix intent brain (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install NumPy and pytest
+        run: python -m pip install --upgrade pip numpy pytest
+
+      - name: Run the ai-matrix test suite
+        working-directory: ai-matrix
+        run: python -m pytest tests -q
+
+      - name: Prove the export pipeline still runs
+        # Deliberately not compared byte-for-byte: BLAS reduction order differs between
+        # machines, so the pytest suite checks that predictions match instead of weights.
+        working-directory: ai-matrix
+        run: python -m ai_matrix.cli export --out /tmp/fresh_ai_matrix_model.json
+
   build:
+    name: Android APK
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up JDK 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: 'temurin'
           java-version: '21'
 
-      - name: Setup Gradle 8.14.6
+      - name: Install the Android 16 platform
+        # The runner image already ships an Android SDK; we only add API 36 so the
+        # install never depends on a third-party action's availability.
+        run: |
+          set -eux
+          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          TOOL="$SDK/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$TOOL" ]; then TOOL="$(command -v sdkmanager)"; fi
+          "$TOOL" --version
+          yes | "$TOOL" --licenses > /dev/null 2>&1 || true
+          "$TOOL" --install "platforms;android-36" "build-tools;36.0.0" "platform-tools"
+
+      - name: Reuse the debug signing key between runs
+        # Without this the runner regenerates its debug keystore every build, and a new
+        # APK would refuse to install over the previous one (signature mismatch).
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: jarvis-debug-keystore-v1
+
+      - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.14.6'
 
-      - name: Run unit tests and assemble debug APK
-        run: gradle --no-daemon --stacktrace :app:testDebugUnitTest :app:assembleDebug
+      - name: Run unit tests and assemble the APK
+        id: gradle
+        env:
+          JARVIS_VERSION_CODE: ${{ github.run_number }}
+        run: |
+          set -o pipefail
+          gradle --no-daemon --stacktrace :app:testDebugUnitTest :app:assembleDebug 2>&1 | tee /tmp/gradle.log
 
-      - name: Upload APK
+      - name: Surface failures as check annotations
+        # Gradle logs and artifacts live behind signed storage URLs that cannot always be
+        # read back, so the useful lines are republished as check-run annotations. A single
+        # annotation is capped at ~4 KB, hence one annotation per failing test class.
+        if: failure()
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          import re
+          import xml.etree.ElementTree as ET
+
+          LIMIT = 3900
+
+          def emit(title, lines):
+              if not lines:
+                  return
+              text = "\n".join(lines)[:LIMIT]
+              escaped = text.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+              print(f"::error title={title}::{escaped}")
+
+          # 1) Compiler and Gradle errors.
+          log = pathlib.Path("/tmp/gradle.log")
+          if log.is_file():
+              pattern = re.compile(
+                  r"(^e: |^> Task .*FAILED|error:|Execution failed|Caused by:|Unresolved reference|"
+                  r"Could not (resolve|find)|is not a function|^\* What went wrong)"
+              )
+              emit(
+                  "Gradle failure digest",
+                  [line for line in log.read_text(errors="replace").splitlines() if pattern.search(line)],
+              )
+
+          # 2) Test failures, grouped by class.
+          results = pathlib.Path("app/build/test-results/testDebugUnitTest")
+          by_class = {}
+          if results.is_dir():
+              for report in sorted(results.glob("*.xml")):
+                  try:
+                      tree = ET.parse(report)
+                  except Exception:
+                      continue
+                  for case in tree.iter("testcase"):
+                      problems = list(case.findall("failure")) + list(case.findall("error"))
+                      if not problems:
+                          continue
+                      name = f"{case.get('classname')}.{case.get('name')}"
+                      detail = [name]
+                      for problem in problems:
+                          message = (problem.get("message") or problem.get("type") or "failed").strip()
+                          detail.append("  " + message.replace("\n", " ")[:600])
+                          body = (problem.text or "").strip().splitlines()
+                          detail.extend("    " + line.strip()[:200] for line in body[1:4])
+                      by_class.setdefault(report.stem, []).extend(detail)
+
+          for index, (cls, lines) in enumerate(sorted(by_class.items())):
+              if index >= 12:
+                  break
+              emit(f"Test failures {cls[:80]}", lines)
+          PY
+
+      - name: Collect build outputs
+        run: |
+          mkdir -p build-outputs
+          cp app/build/outputs/apk/debug/app-debug.apk build-outputs/jarvis-offline-debug.apk
+          ls -lh build-outputs
+
+      - name: Upload the APK
+        # `always()` so a failing test run still hands over the reports.
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: personal-offline-jarvis-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: build-outputs/jarvis-offline-debug.apk
           if-no-files-found: error
+
+      - name: Publish (or refresh) the installable release
+        # Pull requests get a read-only token, so only publish for main/tags/manual runs.
+        if: >-
+          github.event_name != 'pull_request' &&
+          (github.event_name != 'workflow_dispatch' || inputs.publish_release)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="jarvis-latest"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" build-outputs/jarvis-offline-debug.apk --clobber
+          else
+            gh release create "$TAG" build-outputs/jarvis-offline-debug.apk \
+              --title "JARVIS offline assistant (latest APK)" \
+              --notes "Signed debug APK built from ${{ github.sha }} on ${{ github.ref_name }}. Download it on your phone and tap it to install (allow installs from this source when Android asks). Everything in the app runs offline: no INTERNET permission. The speech model and the optional reply model are imported by you from local files." \
+              --target "${{ github.sha }}"
+          fi

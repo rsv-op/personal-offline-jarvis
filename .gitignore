@@ -10,3 +10,10 @@ local.properties
 # OS/editor files
 .DS_Store
 *.swp
+
+# Python (ai-matrix training tools)
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/

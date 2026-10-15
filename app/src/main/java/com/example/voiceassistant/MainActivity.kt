@@ -1,6 +1,8 @@
 package com.example.voiceassistant
 
 import android.Manifest
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -18,12 +20,23 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.RequestMultiplePermissions()
     ) { /* The view model reports microphone permission errors if access is denied. */ }
 
+    /** Extracted Vosk model folder. */
     private val modelFolderPicker = registerForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
     ) { uri ->
         if (uri != null) {
             persistReadPermission(uri)
             viewModel.importOfflineModel(uri)
+        }
+    }
+
+    /** Vosk model `.zip` straight from the model catalog — no unzip app required. */
+    private val modelArchivePicker = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            persistReadPermission(uri)
+            viewModel.importOfflineModelArchive(uri)
         }
     }
 
@@ -36,11 +49,11 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun persistReadPermission(uri: android.net.Uri) {
+    private fun persistReadPermission(uri: Uri) {
         runCatching {
             contentResolver.takePersistableUriPermission(
                 uri,
-                android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                Intent.FLAG_GRANT_READ_URI_PERMISSION
             )
         }
     }
@@ -54,6 +67,7 @@ class MainActivity : ComponentActivity() {
             AssistantApp(
                 viewModel = viewModel,
                 onInstallModel = { modelFolderPicker.launch(null) },
+                onInstallArchive = { modelArchivePicker.launch(arrayOf("application/zip", "*/*")) },
                 onInstallReplyModel = { replyModelPicker.launch(arrayOf("*/*")) }
             )
         }

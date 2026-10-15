@@ -1,6 +1,7 @@
 package com.example.voiceassistant.execution
 
 import com.example.voiceassistant.nlp.AppIntent
+import com.example.voiceassistant.nlp.DurationParser
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -88,6 +89,11 @@ class ExecutionCoordinator(
             "Are you sure you want to delete the file ${intent.fileName}? This cannot be undone."
         is AppIntent.ToggleFlashlight ->
             "Do you want to turn the flashlight ${if (intent.isOn) "on" else "off"}?"
+        is AppIntent.SetTimer ->
+            "Do you want me to start a timer for ${
+                intent.durationSeconds?.let(DurationParser::describe) ?: "that duration"
+            }?"
+        AppIntent.StatusReport -> "Do you want a status report?"
         AppIntent.UnknownIntent -> "I didn't quite catch that. Could you repeat?"
     }
 
@@ -95,6 +101,8 @@ class ExecutionCoordinator(
         is AppIntent.SetAlarm -> "Alarm set."
         is AppIntent.DeleteFile -> "File deleted."
         is AppIntent.ToggleFlashlight -> "Done."
+        is AppIntent.SetTimer -> "Timer started."
+        AppIntent.StatusReport -> "Here is your status."
         AppIntent.UnknownIntent -> ""
     }
 }

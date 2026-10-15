@@ -82,7 +82,15 @@ class OfflineSttIntegrator(
         activeJob?.cancel()
         scope.launch {
             activeJob?.join()
-            if (emitFinalResult) emitFinalAndReset() else engine.reset()
+            try {
+                if (emitFinalResult) emitFinalAndReset() else engine.reset()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // A speech engine that fails while finalising must not take the scope
+                // down with it: report it and let the assistant ask the user to repeat.
+                eventDispatcher(SttEvent.OnError(e))
+            }
         }
     }
 

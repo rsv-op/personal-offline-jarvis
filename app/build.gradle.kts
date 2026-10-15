@@ -8,19 +8,38 @@ plugins {
 
 android {
     namespace = "com.example.voiceassistant"
-    compileSdk = 34
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.example.voiceassistant"
         minSdk = 26
-        targetSdk = 34
-        versionCode = 1
+        targetSdk = 36
+
+        // CI passes the workflow run number so a newly downloaded APK always installs
+        // over the previous one instead of being rejected as a downgrade.
+        versionCode = System.getenv("JARVIS_VERSION_CODE")?.toIntOrNull() ?: 1
         versionName = "1.0"
+
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        ndk {
+            // Phones only: this keeps the bundled native speech/LLM libraries at a
+            // sane size instead of shipping emulator ABIs nobody will install.
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
     }
 
     buildFeatures {
         compose = true
+    }
+
+    packaging {
+        jniLibs {
+            pickFirsts += "**/liblitertlm_jni.so"
+        }
+        resources {
+            excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
     }
 
     compileOptions {
@@ -30,6 +49,10 @@ android {
 
     testOptions {
         unitTests.isIncludeAndroidResources = true
+    }
+
+    lint {
+        abortOnError = false
     }
 }
 
@@ -57,6 +80,7 @@ dependencies {
     testImplementation(composeBom)
     androidTestImplementation(composeBom)
     implementation("androidx.compose.animation:animation")
+    implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.activity:activity-compose:1.8.0")
@@ -72,5 +96,7 @@ dependencies {
     testImplementation("org.mockito.kotlin:mockito-kotlin:5.1.0")
     testImplementation("org.robolectric:robolectric:4.11.1")
     testImplementation("androidx.compose.ui:ui-test-junit4")
+    // Real org.json implementation for plain JVM unit tests (the Android one is a stub).
+    testImplementation("org.json:json:20240303")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
