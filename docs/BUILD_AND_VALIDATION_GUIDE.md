@@ -178,6 +178,10 @@ measured optima; device speed is unknown until benchmarked.
 - Vosk archive: ≤ **2,000,000,000 bytes**, ≤ **5,000 entries**, model root searched to
   **6 levels**, must contain `conf/model.conf`; archives are extracted with zip-slip
   protection into private storage.
+- A speech model must be *usable*, not merely present: `conf/model.conf` has to exist with
+  content and the model has to hold at least **1 MiB** of payload. Both the importer and the
+  speech engine check the contents before loading, so an empty or truncated model is refused
+  with the reason (file count and size) instead of failing later at the orb.
 - Reply model: ≤ **4,000,000,000 bytes**, expected `.litertlm`, copied in 64 KiB chunks.
 - These are import-size limits, not compatibility promises: the phone still needs the memory
   and the runtime has to support the file.

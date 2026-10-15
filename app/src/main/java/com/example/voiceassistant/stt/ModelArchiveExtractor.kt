@@ -95,17 +95,24 @@ internal object ModelArchiveExtractor {
     }
 
     /**
-     * `true` when [directory] holds a model the app can actually load.
-     *
-     * The size requirement is the important half: it is what turns a silently empty
-     * extraction into a visible import failure.
+     * `null` when [directory] holds a model the app can actually load, otherwise the reason
+     * it cannot. The size requirement is the important half: it is what turns a silently
+     * empty extraction into a visible failure instead of a crash when the engine loads it.
      */
-    fun isModelDirectory(directory: File): Boolean {
-        if (!directory.isDirectory) return false
+    fun describeModelProblem(directory: File): String? {
+        if (!directory.isDirectory) return "the model folder does not exist"
         val config = File(directory, CONFIG_FILE)
-        if (!config.isFile || config.length() == 0L) return false
-        return modelSizeBytes(directory) >= MIN_MODEL_BYTES
+        if (!config.isFile) return "$CONFIG_FILE is missing"
+        if (config.length() == 0L) return "$CONFIG_FILE is empty"
+        val bytes = modelSizeBytes(directory)
+        if (bytes < MIN_MODEL_BYTES) {
+            return "the model holds only $bytes bytes of data (an empty or truncated import)"
+        }
+        return null
     }
+
+    /** `true` when [directory] holds a model the app can actually load. */
+    fun isModelDirectory(directory: File): Boolean = describeModelProblem(directory) == null
 
     fun modelSizeBytes(directory: File): Long =
         directory.walkTopDown().filter(File::isFile).sumOf(File::length)
