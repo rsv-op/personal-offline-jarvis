@@ -148,6 +148,106 @@ jobs:
               emit(f"Test failures {cls[:80]}", lines)
           PY
 
+      - name: Verify the built APK
+        # Proves the shipped artifact really is the offline assistant: right package, right
+        # SDK levels, phone ABIs, no INTERNET permission, model asset present. The findings
+        # are republished as a check annotation so they survive the log retention window.
+        run: |
+          set -euo pipefail
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          AAPT="$(ls "$SDK"/build-tools/*/aapt2 | sort -V | tail -1)"
+          SIGNER="$(ls "$SDK"/build-tools/*/apksigner | sort -V | tail -1)"
+          "$AAPT" dump badging "$APK" > /tmp/badging.txt
+          "$SIGNER" verify --print-certs "$APK" > /tmp/certs.txt 2>&1 || true
+          echo "--- badging ---"; cat /tmp/badging.txt
+          echo "--- certificates ---"; cat /tmp/certs.txt
+          APK_PATH="$APK" python3 - <<'PY'
+          import os
+          import pathlib
+          import re
+          import sys
+          import zipfile
+
+          badging = pathlib.Path("/tmp/badging.txt").read_text(errors="replace")
+          certs = pathlib.Path("/tmp/certs.txt").read_text(errors="replace")
+          apk = os.environ["APK_PATH"]
+
+          # aapt2 has shipped more than one spelling for the SDK levels over the years
+          # (`sdkVersion:'26'`, `minSdkVersion='26'`, and the same for the target), so the
+          # levels are collected line by line instead of trusting one exact format.
+          levels = {}
+          for line in badging.splitlines():
+              match = re.match(r"\s*([A-Za-z]+)\s*[:=]\s*'?(\d+)\s*'?\s*$", line.strip())
+              if match:
+                  levels.setdefault(match.group(1), match.group(2))
+
+          def find(pattern, text=badging):
+              match = re.search(pattern, text, re.M)
+              return match.group(1) if match else None
+
+          min_sdk = levels.get("sdkVersion") or levels.get("minSdkVersion")
+          target_sdk = levels.get("targetSdkVersion")
+          compile_sdk = find(r"compileSdkVersion\s*[:=]\s*'?(\d+)")
+          package = find(r"^package: (.*)$")
+          version = find(r"versionName='([^']*)'")
+          code = find(r"versionCode='([^']*)'")
+          abis = find(r"^native-code: (.*)$")
+          permissions = re.findall(r"uses-permission: name='([^']+)'", badging)
+          sdk_lines = [l.strip() for l in badging.splitlines() if re.match(r"^(min|target|compile)?sdkVersion", l.strip(), re.I)]
+
+          findings = [
+              f"package: {package or 'MISSING'} (versionCode {code or '?'}, versionName {version or '?'})",
+              f"compile {compile_sdk or '?'} / min {min_sdk or '?'} -> target {target_sdk or '?'}",
+              "badging levels: " + (", ".join(sdk_lines) or "none"),
+              f"native-code: {abis or 'none'}",
+              "uses-permission: " + (", ".join(sorted(permissions)) or "none"),
+          ]
+
+          problems = []
+          if not package or "com.example.voiceassistant" not in package:
+              problems.append("unexpected or missing package name")
+          if target_sdk != "36":
+              problems.append(f"targetSdkVersion parsed as {target_sdk!r}, expected 36")
+          if compile_sdk != "36":
+              problems.append(f"compileSdkVersion parsed as {compile_sdk!r}, expected 36")
+          if min_sdk != "26":
+              problems.append(f"minSdkVersion parsed as {min_sdk!r}, expected 26")
+          if "android.permission.INTERNET" in permissions:
+              problems.append("INTERNET permission is present; the assistant must stay offline")
+          if not abis or "arm64-v8a" not in abis:
+              problems.append("arm64-v8a native code is missing; the APK would not install on a modern phone")
+
+          with zipfile.ZipFile(apk) as archive:
+              names = archive.namelist()
+              model = archive.getinfo("assets/ai_matrix_model.json") if "assets/ai_matrix_model.json" in names else None
+              findings.append(
+                  "assets/ai_matrix_model.json: " + (f"{model.file_size} bytes" if model else "MISSING")
+              )
+              if model is None:
+                  problems.append("the ai-matrix model asset is missing from the APK")
+              for abi in ("arm64-v8a", "armeabi-v7a"):
+                  libs = [n for n in names if n.startswith(f"lib/{abi}/") and n.endswith(".so")]
+                  findings.append(f"lib/{abi}: {len(libs)} .so files")
+                  if not libs:
+                      problems.append(f"no native libraries for {abi}")
+
+          # apksigner labels signers "Signer #1 certificate DN:" on older build-tools and
+          # "V2 Signer: certificate DN:" on newer ones, so only the tail is matched.
+          signer = re.search(r"certificate DN:\s*(.+)", certs)
+          if signer:
+              findings.append("signed by: " + signer.group(1).strip())
+          else:
+              findings.append("signature: NOT VERIFIED - " + " ".join(certs.split())[:200])
+              problems.append("apksigner could not confirm a valid signature")
+
+          print("::notice title=APK verification::" + " | ".join(findings).replace("%", "%25"))
+          for problem in problems:
+              print(f"::error title=APK verification::{problem}")
+          if problems:
+              sys.exit(1)
+          PY
+
       - name: Collect build outputs
         run: |
           mkdir -p build-outputs

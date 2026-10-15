@@ -123,6 +123,13 @@ Python suite, then the Kotlin unit tests and the APK build. Builds on `main`, ta
 manual runs additionally publish the APK to the `jarvis-latest` release, and the debug
 keystore is cached so each new APK installs over the previous one.
 
+Before the APK is uploaded, CI opens it and proves it is the offline assistant: package
+`com.example.voiceassistant`, `minSdk 26 → targetSdk 36`, `arm64-v8a` native code, the
+ai-matrix asset inside the archive, a valid signature, and **no `INTERNET` permission**. The
+findings are attached to the run as an `APK verification` annotation, and any violation
+fails the build instead of shipping. The same run also uploads a `junit-reports` artifact
+and, if the suite fails, one annotation per failing test class.
+
 ## 7. Project layout
 
 ```
