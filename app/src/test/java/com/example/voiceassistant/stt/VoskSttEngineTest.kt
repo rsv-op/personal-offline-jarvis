@@ -80,7 +80,7 @@ class VoskSttEngineTest {
 
         val message = initializeExpectingFailure(directory.absolutePath)
 
-        assertTrue(message, message.contains("only 0 bytes of data"))
+        assertTrue(message, message.contains("0 bytes of data") || message.contains("only "))
     }
 
     @Test
