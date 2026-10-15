@@ -20,7 +20,8 @@ import kotlinx.coroutines.withContext
 class NlpProcessor(
     private val normalizer: TextNormalizer = TextNormalizer(),
     private val router: IntentRouter = IntentRouter(),
-    private val brain: OnDeviceBrain? = null,
+    /** Exposed so callers (the UI's teach panel and tests) can teach it new phrases. */
+    val brain: OnDeviceBrain? = null,
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default
 ) {
     data class OnIntentParsed(
