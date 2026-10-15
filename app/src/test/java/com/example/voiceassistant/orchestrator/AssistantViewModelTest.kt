@@ -179,15 +179,18 @@ class AssistantViewModelTest {
     }
 
     @Test
-    fun `unknown request stays offline and asks for a local reply model`() = runTest(dispatcher) {
+    fun `unknown request still calls the reply generator even without a model`() = runTest(dispatcher) {
+        // No model installed: the generator itself returns a rule-based acknowledgement, so
+        // the user hears a real reply instead of a pre-empt.
+        whenever(mockLocalGenerationModelStore.installedModelPath()).thenReturn(null)
+        whenever(mockLocalTextGenerator.generateReply(any())).thenReturn("rule-based reply")
+
         val parsed = NlpProcessor().process("what is the capital of France")
         viewModel.onIntentParsed(parsed, "what is the capital of France")
         advanceUntilIdle()
 
-        verifyBlocking(mockLocalTextGenerator, never()) { generateReply(any()) }
-        verifyBlocking(mockTtsController) {
-            speak(eq("I can answer open-ended questions after you import a local reply model."), any())
-        }
+        verifyBlocking(mockLocalTextGenerator) { generateReply(eq("what is the capital of France")) }
+        verifyBlocking(mockTtsController) { speak(eq("rule-based reply"), any()) }
         assertEquals(AssistantUiState.Idle, viewModel.uiState.value)
     }
 

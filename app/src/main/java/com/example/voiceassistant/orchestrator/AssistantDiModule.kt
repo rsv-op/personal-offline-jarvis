@@ -14,6 +14,7 @@ import com.example.voiceassistant.execution.TtsController
 import com.example.voiceassistant.generation.LiteRtLocalTextGenerator
 import com.example.voiceassistant.generation.LocalGenerationModelStore
 import com.example.voiceassistant.generation.LocalTextGenerator
+import com.example.voiceassistant.generation.RuleBasedLocalTextGenerator
 import com.example.voiceassistant.nlp.IntentRouter
 import com.example.voiceassistant.nlp.NlpProcessor
 import com.example.voiceassistant.nlp.TextNormalizer
@@ -86,9 +87,8 @@ object AssistantDiModule {
     @Provides
     @Singleton
     fun provideLocalTextGenerator(
-        @ApplicationContext context: Context,
-        modelStore: LocalGenerationModelStore
-    ): LocalTextGenerator = LiteRtLocalTextGenerator(context, modelStore)
+        ruleBased: RuleBasedLocalTextGenerator
+    ): LocalTextGenerator = ruleBased
 
     /** The vault key lives in the device's secure element, not in the APK or in a file. */
     @Provides
