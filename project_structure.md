@@ -6,6 +6,8 @@ trains its model, and the CI that produces an installable APK.
 ```text
 .
 ├── .github/workflows/build.yml          pytest job + APK job + release publishing
+│                                        (also verifies the built APK and republishes
+│                                         failures, and the APK checks, as annotations)
 ├── README.md                            what it is, how to install it, how it works
 ├── project_structure.md                 this file
 ├── .gitignore
