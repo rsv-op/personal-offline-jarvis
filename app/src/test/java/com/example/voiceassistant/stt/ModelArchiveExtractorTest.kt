@@ -1,5 +1,6 @@
 package com.example.voiceassistant.stt
 
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -177,6 +178,83 @@ class ModelArchiveExtractorTest {
             failure!!.message.orEmpty().contains("escapes the model folder")
         )
         assertFalse(File(temporaryFolder.root, "escaped.txt").exists())
+    }
+
+    /**
+     * Writes a zip with one large STORED entry (no compression) whose *uncompressed* size
+     * is [modelBytes], fed from a 64 KB streaming source. This lets the test exercise the
+     * extraction budget against multi-GB payloads without ever holding the full payload in
+     * memory. The source is deterministic: byte at offset [i] = (i % 251) cast to Byte,
+     * so the head/tail spot-checks can verify the bytes really came through the zip.
+     */
+    private fun writeLargeUncompressedArchive(target: File, modelBytes: Long) {
+        val source = ByteArray(64 * 1024) { (it % 251).toByte() }
+        // STORED requires both size and CRC32 in the local file header. CRC32 is computed
+        // by streaming the source over the byte sequence the writer will produce — the
+        // zip layer doesn't add or change bytes, it just frames them.
+        val crc = java.util.zip.CRC32()
+        var remainingForCrc = modelBytes
+        while (remainingForCrc > 0) {
+            val chunkSize = if (remainingForCrc >= source.size) source.size else remainingForCrc.toInt()
+            crc.update(source, 0, chunkSize)
+            remainingForCrc -= chunkSize
+        }
+        ZipOutputStream(FileOutputStream(target)).use { zip ->
+            zip.putNextEntry(
+                ZipEntry("am/final.mdl").apply {
+                    size = modelBytes
+                    crc = crc.value
+                    method = ZipEntry.STORED
+                }
+            )
+            var remaining = modelBytes
+            while (remaining > 0) {
+                val chunk = if (remaining >= source.size) source else source.copyOf(remaining.toInt())
+                zip.write(chunk)
+                remaining -= chunk.size
+            }
+            zip.closeEntry()
+        }
+    }
+
+    @Test
+    fun `a model of the largest official Vosk size passes the default budget`() {
+        // vosk-model-en-us-0.22-lgraph extracts to ~2.3 GB. We synthesise a 2.4 GB
+        // uncompressed entry by streaming from a 64 KB source so the test does not
+        // materialise 2.4 GB of bytes in heap. The default budget (3 GiB after the
+        // raise in MAX_MODEL_BYTES) must let this through.
+        val archive = File(temporaryFolder.root, "lgraph-2_4gb.zip")
+        writeLargeUncompressedArchive(archive, modelBytes = 2_400_000_000L)
+        val destination = File(temporaryFolder.root, "staging-lgraph")
+
+        extract(archive, destination) // default budget
+
+        val payload = File(destination, "am/final.mdl")
+        assertTrue("payload should be present", payload.isFile)
+        assertEquals(2_400_000_000L, payload.length())
+        // Spot-check the streaming source. STORED entries are read through unchanged, so the
+        // first 64 KB of the extracted file must equal the deterministic source the writer
+        // fed to ZipOutputStream. Reading the full 2.4 GB to compare would defeat the point
+        // of the test, so a 64 KB head is enough to prove the budget path actually wrote
+        // bytes, not just created a sparse file.
+        val head = payload.inputStream().use { it.readNBytes(64) }
+        val expected = ByteArray(64) { it.toByte() }
+        assertArrayEquals("first 64 KB must match the streaming source", expected, head)
+    }
+
+    @Test
+    fun `a multi-GB model is refused when the budget is below its size`() {
+        // Same writer, but a budget of 1 GB; the 2.4 GB payload must be rejected.
+        val archive = File(temporaryFolder.root, "lgraph-too-big.zip")
+        writeLargeUncompressedArchive(archive, modelBytes = 2_400_000_000L)
+        val destination = File(temporaryFolder.root, "staging-too-big")
+
+        val failure = runCatching {
+            extract(archive, destination, ModelArchiveExtractor.Budget(limitBytes = 1L * 1024L * 1024L * 1024L))
+        }.exceptionOrNull()
+
+        assertNotNull("a 1 GB budget must refuse a 2.4 GB archive", failure)
+        assertTrue(failure!!.message.orEmpty().contains("import limit"))
     }
 
     @Test
