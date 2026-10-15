@@ -515,12 +515,10 @@ class AssistantViewModel @Inject constructor(
                 return@launch
             }
             if (localGenerationModelStore.installedModelPath() == null) {
-                speakAndSettle("I can answer open-ended questions after you import a local reply model.")
-                machine.processEvent(AssistantEvent.OnCleanupComplete)
-                return@launch
+                _statusMessage.value = "Replying with the built-in fallback (no reply model installed)…"
+            } else {
+                _statusMessage.value = "Thinking with the on-device model…"
             }
-
-            _statusMessage.value = "Thinking with the on-device model…"
             val reply = try {
                 localTextGenerator.generateReply(userText)
             } catch (error: Exception) {
