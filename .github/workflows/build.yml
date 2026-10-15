@@ -171,29 +171,39 @@ jobs:
           certs = pathlib.Path("/tmp/certs.txt").read_text(errors="replace")
           apk = os.environ["APK_PATH"]
 
-          package = re.search(r"^package: (.*)$", badging, re.M)
-          sdk = re.search(r"^sdkVersion: '(.*)'$", badging, re.M)
-          target = re.search(r"^targetSdkVersion: '(.*)'$", badging, re.M)
-          abis = re.search(r"^native-code: (.*)$", badging, re.M)
-          permissions = re.findall(r"^uses-permission: name='([^']+)'", badging, re.M)
+          def find(pattern, text=badging):
+              # Every pattern is anchored to a line of `aapt2 dump badging` output.
+              match = re.search(pattern, text, re.M)
+              return match.group(1) if match else None
+
+          package = find(r"^package: (.*)$", badging)
+          version = find(r"versionName='([^']*)'")
+          code = find(r"versionCode='([^']*)'")
+          min_sdk = find(r"sdkVersion:\s*'?(\d+)'?")
+          target_sdk = find(r"targetSdkVersion:\s*'?(\d+)'?")
+          compile_sdk = find(r"compileSdkVersion='(\d+)'")
+          abis = find(r"^native-code: (.*)$")
+          permissions = re.findall(r"uses-permission: name='([^']+)'", badging)
 
           findings = [
-              f"package: {package.group(1) if package else 'missing'}",
-              f"sdkVersion: {sdk.group(1) if sdk else '?'} -> targetSdkVersion: {target.group(1) if target else '?'}",
-              f"native-code: {abis.group(1) if abis else 'none'}",
+              f"package: {package or 'MISSING'} (versionCode {code or '?'}, versionName {version or '?'})",
+              f"compile {compile_sdk or '?'} / min {min_sdk or '?'} -> target {target_sdk or '?'}",
+              f"native-code: {abis or 'none'}",
               "uses-permission: " + (", ".join(sorted(permissions)) or "none"),
           ]
 
           problems = []
-          if package and "com.example.voiceassistant" not in package.group(1):
-              problems.append("unexpected package name")
-          if target and target.group(1) != "36":
-              problems.append(f"targetSdkVersion is {target.group(1)}, expected 36")
-          if sdk and sdk.group(1) != "26":
-              problems.append(f"minSdkVersion is {sdk.group(1)}, expected 26")
+          if not package or "com.example.voiceassistant" not in package:
+              problems.append("unexpected or missing package name")
+          if target_sdk != "36":
+              problems.append(f"targetSdkVersion parsed as {target_sdk!r}, expected 36")
+          if compile_sdk != "36":
+              problems.append(f"compileSdkVersion parsed as {compile_sdk!r}, expected 36")
+          if min_sdk != "26":
+              problems.append(f"minSdkVersion parsed as {min_sdk!r}, expected 26")
           if "android.permission.INTERNET" in permissions:
               problems.append("INTERNET permission is present; the assistant must stay offline")
-          if abis and "arm64-v8a" not in abis.group(1):
+          if not abis or "arm64-v8a" not in abis:
               problems.append("arm64-v8a native code is missing; the APK would not install on a modern phone")
 
           with zipfile.ZipFile(apk) as archive:
@@ -207,8 +217,15 @@ jobs:
               for abi in ("arm64-v8a", "armeabi-v7a"):
                   libs = [n for n in names if n.startswith(f"lib/{abi}/") and n.endswith(".so")]
                   findings.append(f"lib/{abi}: {len(libs)} .so files")
+                  if not libs:
+                      problems.append(f"no native libraries for {abi}")
 
-          findings.append("signed: " + ("yes" if "Signer #1 certificate DN:" in certs else "NO"))
+          signer = find(r"Signer #1 certificate DN: (.*)", certs)
+          if signer:
+              findings.append("signed by: " + signer.strip())
+          else:
+              findings.append("signature: NOT VERIFIED — " + " ".join(certs.split())[:200])
+              problems.append("apksigner could not confirm a valid signature")
 
           print("::notice title=APK verification::" + " | ".join(findings).replace("%", "%25"))
           for problem in problems:
