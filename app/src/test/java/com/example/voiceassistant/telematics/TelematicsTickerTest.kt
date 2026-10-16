@@ -53,7 +53,7 @@ class TelematicsTickerTest {
         override fun snapshot(): TelematicsSnapshot {
             calls++
             lastCpu = (calls * 5.0) % 100.0
-            return emptySnapshot().copy(
+            return blankSnapshot().copy(
                 cpu = TelematicsSnapshot.CpuSection(
                     overallPercent = lastCpu.toFloat(),
                     appPercent = 0f,
@@ -71,7 +71,7 @@ class TelematicsTickerTest {
         override fun snapshot(): TelematicsSnapshot = throw RuntimeException("simulated failure")
     }
 
-    internal fun emptySnapshot(): TelematicsSnapshot = TelematicsSnapshot(
+    internal fun blankSnapshot(): TelematicsSnapshot = TelematicsSnapshot(
         memory = TelematicsSnapshot.MemorySection(0L, 0L, 0L, false, 0L, 0L, 0L),
         storage = TelematicsSnapshot.StorageSection(0L, 0L, 0L),
         cpu = TelematicsSnapshot.CpuSection(0f, 0f, emptyList(), 0L, 0L, 0L),
