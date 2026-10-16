@@ -21,6 +21,7 @@ import com.example.voiceassistant.statemachine.AssistantEvent
 import com.example.voiceassistant.statemachine.AssistantUiState
 import com.example.voiceassistant.statemachine.AssistantUiStateMachine
 import com.example.voiceassistant.stt.AudioCaptureSource
+import com.example.voiceassistant.stt.AudioDiagnostics
 import com.example.voiceassistant.stt.OfflineSttIntegrator
 import com.example.voiceassistant.stt.SttEngine
 import com.example.voiceassistant.stt.SttEvent

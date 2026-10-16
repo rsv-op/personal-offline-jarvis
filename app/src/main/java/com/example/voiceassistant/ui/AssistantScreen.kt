@@ -56,10 +56,6 @@ import com.example.voiceassistant.orchestrator.AssistantViewModel
 import com.example.voiceassistant.statemachine.AssistantUiState
 import com.example.voiceassistant.vault.JarvisMemory
 
-private val JarvisCyan = Color(0xFF29E3F5)
-private val JarvisDeep = Color(0xFF05070D)
-private val JarvisPanel = Color(0xFF101827)
-
 /** Actions a phrase can be taught for; the labels match the ai-matrix intent labels. */
 enum class TeachAction(val label: String, val title: String) {
     FLASHLIGHT_ON("FLASHLIGHT_ON", "Flashlight on"),
@@ -95,7 +91,6 @@ fun AssistantApp(
         colorScheme = darkColorScheme(
             primary = JarvisCyan,
             background = JarvisDeep,
-            surface = JarvisPanel,
             surface = JarvisPanel,
             onPrimary = JarvisDeep,
             onBackground = Color(0xFFE6F1FF),
