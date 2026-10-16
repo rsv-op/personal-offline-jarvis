@@ -168,6 +168,12 @@ class AssistantViewModel @Inject constructor(
     /** The size of the installed Vosk model in MB, or null if no model is installed. */
     val diagnosticModelSizeMb: Double? get() = modelStore.installedModelSizeMb()
 
+    /** The current LiteRT-LM reply model path, or null if no model is installed. */
+    val diagnosticReplyModelPath: String? get() = localGenerationModelStore.installedModelPath()
+
+    /** The size of the installed reply model in MB, or null if no model is installed. */
+    val diagnosticReplyModelSizeMb: Double? get() = localGenerationModelStore.installedModelSizeMb()
+
     private var pendingIntent: AppIntent? = null
     private var awaitingAlarmTime = false
     private var awaitingTimerDuration = false

@@ -139,6 +139,8 @@ private fun DiagnoseTab(
     val stats = remember { viewModel.diagnosticStats }
     val modelPath = remember { viewModel.diagnosticModelPath }
     val modelSizeMb = remember { viewModel.diagnosticModelSizeMb }
+    val replyModelPath = remember { viewModel.diagnosticReplyModelPath }
+    val replyModelSizeMb = remember { viewModel.diagnosticReplyModelSizeMb }
     val totalMemoryMb = remember(viewModel) { viewModel.memoryBudget.totalMemoryBytes / (1024 * 1024) }
     val availableMemoryMb = remember(viewModel) { viewModel.memoryBudget.availableMemoryBytes / (1024 * 1024) }
     val context = LocalContext.current
@@ -184,6 +186,41 @@ private fun DiagnoseTab(
                     text = "Size: ${modelSizeMb?.let { "%.1f MB".format(it) } ?: "(reading)"}",
                     style = MaterialTheme.typography.bodyMedium
                 )
+            }
+        }
+
+        SectionCard(title = "Reply model") {
+            if (replyModelPath == null) {
+                Text(
+                    text = "No reply model installed. JARVIS will fall back to a rule-based reply when one is not available.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            } else {
+                Text(text = "Path: $replyModelPath", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    text = "Size: ${replyModelSizeMb?.let { "%.1f MB".format(it) } ?: "(reading)"}",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                if (replyModelSizeMb != null) {
+                    // Same 2.5× factor LiteRtLocalTextGenerator uses for its import
+                    // refusal check, so this row mirrors the real load decision.
+                    val requiredMb = (replyModelSizeMb * 2.5).toInt()
+                    val safe = availableMemoryMb >= requiredMb
+                    StatRow(
+                        "Reply-model headroom (2.5×)",
+                        "$requiredMb MB needed",
+                        ok = safe
+                    )
+                    if (!safe) {
+                        Text(
+                            text = "Not enough free RAM to cold-start the reply model. " +
+                                "JARVIS will refuse to load it until you close other apps. " +
+                                "If it was already loaded, expect the next cold start to fail.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
             }
         }
 

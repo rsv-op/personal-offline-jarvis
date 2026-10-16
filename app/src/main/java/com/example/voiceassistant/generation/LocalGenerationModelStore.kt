@@ -22,6 +22,12 @@ class LocalGenerationModelStore @Inject constructor(
     fun installedModelPath(): String? =
         installedModel.takeIf { it.isFile && it.length() > 0L }?.absolutePath
 
+    /** Human-readable size of the installed reply model, or `null` when none is installed. */
+    fun installedModelSizeMb(): Double? =
+        installedModel.takeIf { it.isFile && it.length() > 0L }
+            ?.length()
+            ?.let { bytes -> bytes / (1024.0 * 1024.0) }
+
     suspend fun importModel(uri: Uri): String = withContext(Dispatchers.IO) {
         val displayName = context.contentResolver.query(
             uri,
