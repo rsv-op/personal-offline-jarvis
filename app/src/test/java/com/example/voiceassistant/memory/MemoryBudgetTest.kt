@@ -25,16 +25,15 @@ class MemoryBudgetTest {
     @Test
     fun `a 2GB reply model is refused on a phone with 4GB free RAM`() {
         // This is the user's actual failure case: 8 GB phone, ~4 GB free, 2 GB model.
-        // 2.5× headroom → requires 5 GB → only 4 GB free → refuse.
-        // The message uses binary-MB (1024-based): 2 GB model = 2048 MB, 4 GB free = 4096 MB,
-        // 5 GB headroom = 5000 MB (2_097_152_000 × 2.5 / 1_048_576 = 5000).
+        // The helper divides by 1_048_576 (binary MB), so 2 GB = 2000 in this test's
+        // units and 2.5× headroom is 5000; the message is honest about it.
         val available = mb(4_000)
         val model = mb(2_000)
         val reason = refusalReason(available, model, headroomMultiplier = 2.5)
-        assertNotNull("a 2 GB model needs 5 GB headroom, only 4 GB free → should refuse", reason)
-        assertTrue("reason should name the model size in MB, was: $reason", reason!!.contains("2048"))
+        assertNotNull("a 2 GB model on 4 GB free should be refused with 2.5× headroom", reason)
+        assertTrue("reason should name the model size, was: $reason", reason!!.contains("2000"))
         assertTrue("reason should name the required headroom, was: $reason", reason.contains("5000"))
-        assertTrue("reason should name the available RAM, was: $reason", reason.contains("4096"))
+        assertTrue("reason should name the available RAM, was: $reason", reason.contains("4000"))
     }
 
     @Test
