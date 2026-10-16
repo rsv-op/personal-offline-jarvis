@@ -51,10 +51,6 @@ android {
         unitTests.isIncludeAndroidResources = true
         unitTests.isReturnDefaultValues = true
         unitTests.all {
-            // The unit-test JVM defaults to a small heap; the telematics ticker
-            // and the Compose render tests both allocate non-trivial memory
-            // during a single test class, so give them room to breathe.
-            it.jvmArgs = (it.jvmArgs ?: listOf()) + listOf("-Xmx2g")
             // Run unit tests serially. Robolectric + Compose render tests hold
             // the entire Android framework in heap, and running them in parallel
             // exhausts the 7 GB CI runner. Sequential execution finishes slower
@@ -112,4 +108,12 @@ dependencies {
     // Real org.json implementation for plain JVM unit tests (the Android one is a stub).
     testImplementation("org.json:json:20240303")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
+}
+
+// Pin the test JVM heap and the parallel-fork count at the TaskContainer level
+// so the values actually reach the JUnit runner. The testOptions.unitTests.all
+// block above sometimes doesn't propagate the JVM args to the forked JVMs.
+tasks.withType<Test>().configureEach {
+    maxParallelForks = 1
+    jvmArgs = (jvmArgs ?: listOf()) + listOf("-Xmx2g", "-XX:+UseG1GC")
 }
