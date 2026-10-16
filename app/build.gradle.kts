@@ -49,15 +49,6 @@ android {
 
     testOptions {
         unitTests.isIncludeAndroidResources = true
-        unitTests.isReturnDefaultValues = true
-        unitTests.all {
-            // Run unit tests serially. Robolectric + Compose render tests hold
-            // the entire Android framework in heap, and running them in parallel
-            // exhausts the 7 GB CI runner. Sequential execution finishes slower
-            // but is reliable; parallel was breaking JarvisMemoryTest and
-            // AssistantScreenTest with OutOfMemoryError.
-            it.maxParallelForks = 1
-        }
     }
 
     lint {
@@ -108,23 +99,4 @@ dependencies {
     // Real org.json implementation for plain JVM unit tests (the Android one is a stub).
     testImplementation("org.json:json:20240303")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
-}
-
-// Pin the test JVM heap and the parallel-fork count at the TaskContainer level
-// so the values actually reach the JUnit runner. The testOptions.unitTests.all
-// block above sometimes doesn't propagate the JVM args to the forked JVMs.
-tasks.withType<Test>().configureEach {
-    maxParallelForks = 1
-    jvmArgs = (jvmArgs ?: listOf()) + listOf(
-        "-Xmx2g",
-        "-XX:+UseG1GC",
-        // Coroutine debug metadata accumulates across the test JVM lifetime
-        // (each coroutine that runs through a TestCoroutineScheduler adds an
-        // entry to a global name table). After ~30k entries the table
-        // OOMs the test JVM in a way that -Xmx alone cannot fix.
-        "-Dkotlinx.coroutines.debug=off",
-        // Robolectric's graphics resource loader is heavy and the Compose
-        // tests do not need it.
-        "-Drobolectric.graphicsMode=NATIVE"
-    )
 }
