@@ -166,16 +166,24 @@ object AudioDiagnostics {
                 RandomAccessFile(file, "r").use { raf ->
                     val header = ByteArray(44)
                     if (raf.read(header) != 44) return false
-                    val buffer = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN)
                     val riff = String(header, 0, 4, Charsets.US_ASCII)
                     val wave = String(header, 8, 4, Charsets.US_ASCII)
                     val fmt = String(header, 12, 4, Charsets.US_ASCII)
-                    if (riff != "RIFF" || wave != "WAVE" || fmt != "fmt ") return false
-                    buffer.position(22)
+                    val data = String(header, 36, 4, Charsets.US_ASCII)
+                    if (riff != "RIFF" || wave != "WAVE" || fmt != "fmt " || data != "data") return false
+                    val buffer = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN)
+                    // Layout: 20..21 format tag, 22..23 channels, 24..27 sample rate,
+                    // 28..31 byte rate, 32..33 block align, 34..35 bits per sample.
+                    buffer.position(20)
+                    val formatTag = buffer.short.toInt() and 0xFFFF
                     val channels = buffer.short.toInt() and 0xFFFF
                     val sampleRate = buffer.int
+                    buffer.position(34)
                     val bitsPerSample = buffer.short.toInt() and 0xFFFF
-                    channels == 1 && bitsPerSample == 16 && sampleRate == expectedSampleRateHz
+                    formatTag == PCM_FORMAT_TAG &&
+                        channels == 1 &&
+                        bitsPerSample == BITS_PER_SAMPLE &&
+                        sampleRate == expectedSampleRateHz
                 }
             } catch (_: Exception) {
                 false
