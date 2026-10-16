@@ -115,5 +115,16 @@ dependencies {
 // block above sometimes doesn't propagate the JVM args to the forked JVMs.
 tasks.withType<Test>().configureEach {
     maxParallelForks = 1
-    jvmArgs = (jvmArgs ?: listOf()) + listOf("-Xmx2g", "-XX:+UseG1GC")
+    jvmArgs = (jvmArgs ?: listOf()) + listOf(
+        "-Xmx2g",
+        "-XX:+UseG1GC",
+        // Coroutine debug metadata accumulates across the test JVM lifetime
+        // (each coroutine that runs through a TestCoroutineScheduler adds an
+        // entry to a global name table). After ~30k entries the table
+        // OOMs the test JVM in a way that -Xmx alone cannot fix.
+        "-Dkotlinx.coroutines.debug=off",
+        // Robolectric's graphics resource loader is heavy and the Compose
+        // tests do not need it.
+        "-Drobolectric.graphicsMode=NATIVE"
+    )
 }
