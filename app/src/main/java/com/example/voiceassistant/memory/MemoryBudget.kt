@@ -17,9 +17,14 @@ interface DeviceMemory {
     /**
      * Returns `null` if a model of [modelBytes] can be loaded right now, otherwise a
      * reason that names both the threshold and what was actually available. The Vosk
-     * path uses [headroomMultiplier] of 1.5; the LiteRT path uses 2.0.
+     * path uses [headroomMultiplier] of 1.5; the LiteRT path uses 2.5.
+     *
+     * The 2.5× figure is intentionally tighter than the 2× the user's crash
+     * suggests the math needs: the on-disk size is a lower bound, and LiteRT
+     * memory-maps the model and then allocates KV cache and a context window
+     * on top of it. A 2 GB model on 4 GB free RAM still OOM-kills the device.
      */
-    fun refusalReason(modelBytes: Long, headroomMultiplier: Double = 2.0): String? =
+    fun refusalReason(modelBytes: Long, headroomMultiplier: Double = 2.5): String? =
         Companion.refusalReason(availableMemoryBytes, modelBytes, headroomMultiplier)
 
     companion object {
@@ -30,7 +35,7 @@ interface DeviceMemory {
         fun refusalReason(
             availableBytes: Long,
             modelBytes: Long,
-            headroomMultiplier: Double = 2.0
+            headroomMultiplier: Double = 2.5
         ): String? {
             if (modelBytes <= 0L) return "the model file is empty"
             if (availableBytes == 0L) return null // we cannot read memory; let the load attempt proceed

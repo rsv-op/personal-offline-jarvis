@@ -76,11 +76,12 @@ class LiteRtLocalTextGenerator @Inject constructor(
 
         // Refuse to load a model the device cannot hold. The kernel will OOM-kill us if
         // we try to load a 2 GB LiteRT model on a phone with 4 GB free RAM, and on some
-        // devices that takes down the whole OS. 2× headroom covers the model plus the
-        // KV cache LiteRT allocates on top of it.
+        // devices that takes down the whole OS. 2.5× headroom covers the model plus the
+        // KV cache LiteRT allocates on top of it; 2× was tried first and was still too
+        // tight on the user's device.
         val modelFile = File(modelPath)
         val modelBytes = if (modelFile.isFile) modelFile.length() else 0L
-        memoryBudget.refusalReason(modelBytes, headroomMultiplier = 2.0)?.let { reason ->
+        memoryBudget.refusalReason(modelBytes, headroomMultiplier = 2.5)?.let { reason ->
             throw IllegalStateException(reason)
         }
 

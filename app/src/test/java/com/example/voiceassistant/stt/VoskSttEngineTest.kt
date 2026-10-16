@@ -117,8 +117,9 @@ class VoskSttEngineTest {
         val directory = modelDirectory()
         File(directory, "conf").mkdirs()
         File(directory, "conf/model.conf").writeText("[model]\nname=tiny\n")
-        // A 2 MB payload (well below the 1 MB floor? actually the MIN_MODEL_BYTES is 1 MiB,
-        // so 2 MiB passes; the memory check is what should fire).
+        File(directory, "am").mkdirs()
+        // 2 MiB payload — passes the 1 MiB MIN_MODEL_BYTES floor, so the memory check
+        // is what fires here, not the content check.
         val payload = ByteArray(2 * 1024 * 1024) { (it % 251).toByte() }
         File(directory, "am/final.mdl").writeBytes(payload)
 

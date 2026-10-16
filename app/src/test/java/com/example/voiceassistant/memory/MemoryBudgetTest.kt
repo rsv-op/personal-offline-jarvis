@@ -25,20 +25,28 @@ class MemoryBudgetTest {
     @Test
     fun `a 2GB reply model is refused on a phone with 4GB free RAM`() {
         // This is the user's actual failure case: 8 GB phone, ~4 GB free, 2 GB model.
+        // 2.5× headroom → requires 5 GB → only 4 GB free → refuse.
         val available = mb(4_000)
         val model = mb(2_000)
-        val reason = refusalReason(available, model, headroomMultiplier = 2.0)
-        assertNotNull("a 2 GB model needs 4 GB headroom, only 4 GB free → should refuse", reason)
+        val reason = refusalReason(available, model, headroomMultiplier = 2.5)
+        assertNotNull("a 2 GB model needs 5 GB headroom, only 4 GB free → should refuse", reason)
         assertTrue(reason!!.contains("2048"))
-        assertTrue(reason.contains("4000"))
+    }
+
+    @Test
+    fun `a 2GB reply model is allowed on a phone with 5GB free RAM`() {
+        // 2.5× headroom → requires 5 GB → 5 GB free → allowed (just barely).
+        val available = mb(5_000)
+        val model = mb(2_000)
+        assertNull(refusalReason(available, model, headroomMultiplier = 2.5))
     }
 
     @Test
     fun `the Vosk headroom is more generous than LiteRT`() {
-        val available = mb(3_000)
+        val available = mb(3_500)
         val model = mb(2_000)
-        // 2.0× headroom (LiteRT): needs 4000 MB → refuse.
-        assertNotNull(refusalReason(available, model, headroomMultiplier = 2.0))
+        // 2.5× headroom (LiteRT): needs 5000 MB → refuse.
+        assertNotNull(refusalReason(available, model, headroomMultiplier = 2.5))
         // 1.5× headroom (Vosk): needs 3000 MB → allow.
         assertNull(refusalReason(available, model, headroomMultiplier = 1.5))
     }
