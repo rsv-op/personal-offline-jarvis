@@ -71,7 +71,7 @@ class TelematicsTickerTest {
         override fun snapshot(): TelematicsSnapshot = throw RuntimeException("simulated failure")
     }
 
-    private fun emptySnapshot(): TelematicsSnapshot = TelematicsSnapshot(
+    internal fun emptySnapshot(): TelematicsSnapshot = TelematicsSnapshot(
         memory = TelematicsSnapshot.MemorySection(0L, 0L, 0L, false, 0L, 0L, 0L),
         storage = TelematicsSnapshot.StorageSection(0L, 0L, 0L),
         cpu = TelematicsSnapshot.CpuSection(0f, 0f, emptyList(), 0L, 0L, 0L),
