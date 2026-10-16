@@ -49,6 +49,12 @@ android {
 
     testOptions {
         unitTests.isIncludeAndroidResources = true
+        unitTests.all {
+            // The unit-test JVM defaults to a small heap; the telematics ticker
+            // and the Compose render tests both allocate non-trivial memory
+            // during a single test class, so give them room to breathe.
+            it.jvmArgs = (it.jvmArgs ?: listOf()) + listOf("-Xmx2g")
+        }
     }
 
     lint {
