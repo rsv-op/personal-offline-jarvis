@@ -72,7 +72,7 @@ class TelematicsTickerTest {
     }
 
     private fun emptySnapshot(): TelematicsSnapshot = TelematicsSnapshot(
-        memory = TelematicsSnapshot.MemorySection(0L, 0L, 0L, false, 0L, 0L, 0L, 0L, 0L),
+        memory = TelematicsSnapshot.MemorySection(0L, 0L, 0L, false, 0L, 0L, 0L),
         storage = TelematicsSnapshot.StorageSection(0L, 0L, 0L),
         cpu = TelematicsSnapshot.CpuSection(0f, 0f, emptyList(), 0L, 0L, 0L),
         battery = TelematicsSnapshot.BatterySection(-1, false, "unknown", 0f, 0, 0L, "unknown"),

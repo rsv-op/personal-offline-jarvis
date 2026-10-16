@@ -22,9 +22,7 @@ data class TelematicsSnapshot(
         val isLowMemory: Boolean,
         val appPssKb: Long,
         val appPrivateDirtyKb: Long,
-        val nativeHeapBytes: Long,
-        val gcCount: Long,
-        val gcTimeMs: Long
+        val nativeHeapBytes: Long
     ) {
         val availableFraction: Float
             get() = if (totalBytes == 0L) 0f else (availableBytes.toDouble() / totalBytes).toFloat()

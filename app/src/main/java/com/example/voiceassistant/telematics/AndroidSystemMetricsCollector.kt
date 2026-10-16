@@ -51,15 +51,7 @@ class AndroidSystemMetricsCollector @Inject constructor(
             isLowMemory = mi.lowMemory,
             appPssKb = appInfo.first,
             appPrivateDirtyKb = appInfo.second,
-            nativeHeapBytes = Debug.getNativeHeapAllocatedSize(),
-            gcCount = Debug.getRuntimeStats()?.let { stats ->
-                // The runtime stats string format is undocumented but stable: it
-                // contains "gc-count=<n>" and "gc-time=<n>ms" lines. We parse both.
-                Regex("gc-count=(\\d+)").find(stats)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
-            } ?: 0L,
-            gcTimeMs = Debug.getRuntimeStats()?.let { stats ->
-                Regex("gc-time=(\\d+)ms").find(stats)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
-            } ?: 0L
+            nativeHeapBytes = Debug.getNativeHeapAllocatedSize()
         )
     }
 
@@ -273,9 +265,7 @@ class AndroidSystemMetricsCollector @Inject constructor(
                 info.longVersionCode
             } else 0L,
             targetSdk = context.applicationInfo.targetSdkVersion,
-            minSdk = if (info != null && info.applicationInfo != null) {
-                info.applicationInfo.minSdkVersion
-            } else 0
+            minSdk = info?.applicationInfo?.minSdkVersion ?: 0
         )
     }
 }

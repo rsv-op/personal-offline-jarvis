@@ -4,6 +4,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -299,7 +300,6 @@ private fun TelematicsTab(viewModel: AssistantViewModel) {
             StatRow("App PSS", "${mem.appPssKb / 1024} MB")
             StatRow("App private dirty", "${mem.appPrivateDirtyKb / 1024} MB")
             StatRow("Native heap", "${mem.nativeHeapBytes / (1024 * 1024)} MB")
-            StatRow("GC count / time", "${mem.gcCount} / ${mem.gcTimeMs} ms")
             if (inLowMemory) {
                 Text(
                     text = "Low memory. Android is likely to start killing background apps, " +
