@@ -32,7 +32,8 @@ class TelematicsTicker(
     init {
         scope.launch {
             while (true) {
-                val snap = runCatching { collector.snapshot() }.getOrElse { emptySnapshot() }
+                val snap: TelematicsSnapshot = runCatching { collector.snapshot() }
+                    .getOrNull() ?: emptySnapshot()
                 _flow.value = snap
                 if (cpuRing.size == CPU_HISTORY_SIZE) cpuRing.removeFirst()
                 cpuRing.addLast(snap.cpu.overallPercent)
