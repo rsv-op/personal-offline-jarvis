@@ -1,5 +1,6 @@
 package com.example.voiceassistant.stt
 
+import com.example.voiceassistant.memory.DeviceMemory
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -22,7 +23,12 @@ class VoskSttEngineTest {
     @get:Rule
     val temporaryFolder = TemporaryFolder()
 
-    private val engine = VoskSttEngine()
+    // The memory check is a separate layer and these tests don't exercise it; give the
+    // engine enough headroom to focus on the content-validation paths.
+    private val engine = VoskSttEngine(object : DeviceMemory {
+        override val totalMemoryBytes: Long = 8L * 1024 * 1024 * 1024
+        override val availableMemoryBytes: Long = 8L * 1024 * 1024 * 1024
+    })
 
     private fun modelDirectory(name: String = "vosk-model"): File =
         temporaryFolder.newFolder(name)
@@ -96,6 +102,31 @@ class VoskSttEngineTest {
         assertTrue(
             "transcribing with no model must fail loudly, was: $failure",
             failure!!.message.orEmpty().contains("has not been initialized")
+        )
+    }
+
+    @Test
+    fun `a usable model on a device with no free RAM is refused with the memory reason`() {
+        // 1 MB of free RAM is not enough to load any real model, so the memory check fires
+        // before the native loader. The content checks all pass; the engine must surface
+        // the memory budget's reason.
+        val tightEngine = VoskSttEngine(object : DeviceMemory {
+            override val totalMemoryBytes: Long = 8L * 1024 * 1024 * 1024
+            override val availableMemoryBytes: Long = 1024L * 1024
+        })
+        val directory = modelDirectory()
+        File(directory, "conf").mkdirs()
+        File(directory, "conf/model.conf").writeText("[model]\nname=tiny\n")
+        // A 2 MB payload (well below the 1 MB floor? actually the MIN_MODEL_BYTES is 1 MiB,
+        // so 2 MiB passes; the memory check is what should fire).
+        val payload = ByteArray(2 * 1024 * 1024) { (it % 251).toByte() }
+        File(directory, "am/final.mdl").writeBytes(payload)
+
+        val failure = runCatching { tightEngine.initialize(directory.absolutePath) }.exceptionOrNull()
+        assertNotNull("a 2 MB model on 1 MB free should be refused", failure)
+        assertTrue(
+            "failure must name the memory check, was: ${failure?.message}",
+            failure!!.message.orEmpty().contains("free RAM")
         )
     }
 }

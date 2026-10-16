@@ -104,8 +104,8 @@ class AssistantViewModelTest {
         mockLocalTextGenerator = mock()
         mockLocalGenerationModelStore = mock()
         // The view model only reads totalMemoryBytes/availableMemoryBytes from this, and
-        // the existing test surface never inspects them, so a relaxed mock is fine here.
-        mockMemoryBudget = mock(relaxed = true)
+        // the existing test surface never inspects them, so a plain Mockito mock is fine.
+        mockMemoryBudget = mock()
 
         frames = MutableSharedFlow(extraBufferCapacity = 4)
         doReturn(frames).whenever(mockAudioCaptureSource).frames
