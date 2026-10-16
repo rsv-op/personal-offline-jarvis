@@ -10,6 +10,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -88,42 +89,52 @@ fun AssistantApp(
     val confirmationPrompt by viewModel.confirmationPrompt.collectAsStateWithLifecycle()
     val intentSource by viewModel.intentSource.collectAsStateWithLifecycle()
     val isImporting by viewModel.isImporting.collectAsStateWithLifecycle()
+    val isDiagnosing by viewModel.isDiagnosing.collectAsStateWithLifecycle()
 
     MaterialTheme(
         colorScheme = darkColorScheme(
             primary = JarvisCyan,
             background = JarvisDeep,
             surface = JarvisPanel,
+            surface = JarvisPanel,
             onPrimary = JarvisDeep,
             onBackground = Color(0xFFE6F1FF),
             onSurface = Color(0xFFE6F1FF)
         )
     ) {
-        AssistantScreen(
-            uiState = uiState,
-            transcript = transcript,
-            onConfirm = viewModel::confirmAction,
-            onDeny = viewModel::denyAction,
-            onManualWake = viewModel::toggleListening,
-            modelStatus = modelStatus,
-            replyModelStatus = replyModelStatus,
-            statusMessage = statusMessage,
-            onInstallModel = onInstallModel,
-            onInstallReplyModel = onInstallReplyModel,
-            onInstallArchive = onInstallArchive,
-            brainStatus = brainStatus,
-            vaultStatus = vaultStatus,
-            confirmationPrompt = confirmationPrompt,
-            taughtPhrases = taughtPhrases,
-            lastUtterance = lastUtterance,
-            isImporting = isImporting,
-            intentSource = intentSource,
-            modelSizeMb = modelSizeMb,
-            onTeach = viewModel::teach,
-            onTeachLast = viewModel::teachLastUtterance,
-            onForget = viewModel::forgetPhrase,
-            onForgetAll = viewModel::forgetAllPhrases
-        )
+        if (isDiagnosing) {
+            DiagnoseScreen(
+                viewModel = viewModel,
+                onClose = viewModel::closeDiagnostics
+            )
+        } else {
+            AssistantScreen(
+                uiState = uiState,
+                transcript = transcript,
+                onConfirm = viewModel::confirmAction,
+                onDeny = viewModel::denyAction,
+                onManualWake = viewModel::toggleListening,
+                onLongPress = viewModel::openDiagnostics,
+                modelStatus = modelStatus,
+                replyModelStatus = replyModelStatus,
+                statusMessage = statusMessage,
+                onInstallModel = onInstallModel,
+                onInstallReplyModel = onInstallReplyModel,
+                onInstallArchive = onInstallArchive,
+                brainStatus = brainStatus,
+                vaultStatus = vaultStatus,
+                confirmationPrompt = confirmationPrompt,
+                taughtPhrases = taughtPhrases,
+                lastUtterance = lastUtterance,
+                isImporting = isImporting,
+                intentSource = intentSource,
+                modelSizeMb = modelSizeMb,
+                onTeach = viewModel::teach,
+                onTeachLast = viewModel::teachLastUtterance,
+                onForget = viewModel::forgetPhrase,
+                onForgetAll = viewModel::forgetAllPhrases
+            )
+        }
     }
 }
 
@@ -151,7 +162,8 @@ fun AssistantScreen(
     onTeach: (String, String) -> Unit = { _, _ -> },
     onTeachLast: (String) -> Unit = {},
     onForget: (String) -> Unit = {},
-    onForgetAll: () -> Unit = {}
+    onForgetAll: () -> Unit = {},
+    onLongPress: () -> Unit = {}
 ) {
     Surface(
         modifier = Modifier.fillMaxSize(),
@@ -177,7 +189,11 @@ fun AssistantScreen(
             )
 
             Spacer(modifier = Modifier.height(20.dp))
-            AssistantOrb(uiState = uiState, onClick = onManualWake)
+            AssistantOrb(
+                uiState = uiState,
+                onClick = onManualWake,
+                onLongPress = onLongPress
+            )
 
             Spacer(modifier = Modifier.height(12.dp))
             Text(
@@ -474,8 +490,13 @@ private fun TeachPanel(
     }
 }
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-fun AssistantOrb(uiState: AssistantUiState, onClick: () -> Unit) {
+fun AssistantOrb(
+    uiState: AssistantUiState,
+    onClick: () -> Unit,
+    onLongPress: () -> Unit = {}
+) {
     val isAnimating = uiState is AssistantUiState.Listening || uiState is AssistantUiState.Processing
     val transition = rememberInfiniteTransition(label = "assistant-orb")
     val scale by transition.animateFloat(
@@ -509,7 +530,10 @@ fun AssistantOrb(uiState: AssistantUiState, onClick: () -> Unit) {
             .scale(scale)
             .clip(CircleShape)
             .background(color)
-            .clickable(onClick = onClick)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongPress
+            )
             .testTag("AssistantOrb"),
         contentAlignment = Alignment.Center
     ) {
