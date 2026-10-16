@@ -3,9 +3,7 @@ package com.example.voiceassistant.telematics
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -21,23 +19,20 @@ class TelematicsTickerTest {
         val counter = Counter()
         // Use the test scope itself as the ticker's scope so the virtual clock
         // controls the delay() inside the upstream flow. The collector is invoked
-        // only while at least one subscriber is alive; the test subscribes for the
-        // duration of the call and then cancels.
+        // only while at least one subscriber is alive; the test subscribes via
+        // backgroundScope so the test body can finish without leaving an active
+        // child job on the test scope.
         val ticker = TelematicsTicker(counter, this, intervalMillis = 5L)
-        val job = launch { ticker.flow.collect { /* keep the ticker subscribed */ } }
-        try {
-            // Advance the virtual clock by 400 ms; with a 5 ms interval this
-            // produces ~80 ticks without allocating any real coroutine state.
-            advanceTimeBy(400L)
-            runCurrent()
-            val samples = ticker.cpuHistory.value
-            assertTrue("expected many samples, got ${samples.size}", samples.size >= 5)
-            assertTrue("history must not exceed CPU_HISTORY_SIZE", samples.size <= TelematicsTicker.CPU_HISTORY_SIZE)
-            // Latest sample should be the most recent collector value.
-            assertEquals(counter.lastCpu.toFloat(), samples.last(), 0.01f)
-        } finally {
-            job.cancelAndJoin()
-        }
+        backgroundScope.launch { ticker.flow.collect { /* keep the ticker subscribed */ } }
+        // Advance the virtual clock by 400 ms; with a 5 ms interval this
+        // produces ~80 ticks without allocating any real coroutine state.
+        advanceTimeBy(400L)
+        runCurrent()
+        val samples = ticker.cpuHistory.value
+        assertTrue("expected many samples, got ${samples.size}", samples.size >= 5)
+        assertTrue("history must not exceed CPU_HISTORY_SIZE", samples.size <= TelematicsTicker.CPU_HISTORY_SIZE)
+        // Latest sample should be the most recent collector value.
+        assertEquals(counter.lastCpu.toFloat(), samples.last(), 0.01f)
     }
 
     @Test
