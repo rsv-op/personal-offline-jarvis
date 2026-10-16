@@ -85,6 +85,12 @@ object AssistantDiModule {
         com.example.voiceassistant.memory.DeviceMemory = budget
 
     @Provides
+    @Singleton
+    fun provideSystemMetricsCollector(
+        collector: com.example.voiceassistant.telematics.AndroidSystemMetricsCollector
+    ): com.example.voiceassistant.telematics.SystemMetricsCollector = collector
+
+    @Provides
     @SpeechDispatcher
     fun provideSpeechDispatcher(): kotlinx.coroutines.CoroutineDispatcher =
         kotlinx.coroutines.Dispatchers.Default
