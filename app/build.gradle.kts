@@ -49,12 +49,19 @@ android {
 
     testOptions {
         unitTests.isIncludeAndroidResources = true
+        unitTests.isReturnDefaultValues = true
         unitTests.all {
             // The unit-test JVM defaults to a small heap; the telematics ticker
             // and the Compose render tests both allocate non-trivial memory
             // during a single test class, so give them room to breathe.
             it.jvmArgs = (it.jvmArgs ?: listOf()) + listOf("-Xmx2g")
         }
+        // Run unit tests serially. Robolectric + Compose render tests hold
+        // the entire Android framework in heap, and running them in parallel
+        // exhausts the 7 GB CI runner. Sequential execution finishes slower
+        // but is reliable; parallel was breaking JarvisMemoryTest and
+        // AssistantScreenTest with OutOfMemoryError.
+        unitTests.maxParallelForks = 1
     }
 
     lint {
