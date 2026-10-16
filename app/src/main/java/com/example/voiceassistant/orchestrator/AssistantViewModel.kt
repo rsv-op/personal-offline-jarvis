@@ -21,6 +21,7 @@ import com.example.voiceassistant.statemachine.AssistantEvent
 import com.example.voiceassistant.statemachine.AssistantUiState
 import com.example.voiceassistant.statemachine.AssistantUiStateMachine
 import com.example.voiceassistant.stt.AudioCaptureSource
+import com.example.voiceassistant.stt.AudioDiagnostics
 import com.example.voiceassistant.stt.OfflineSttIntegrator
 import com.example.voiceassistant.stt.SttEngine
 import com.example.voiceassistant.stt.SttEvent
@@ -118,6 +119,26 @@ class AssistantViewModel @Inject constructor(
 
     private val _isImporting = MutableStateFlow(false)
     val isImporting: StateFlow<Boolean> = _isImporting.asStateFlow()
+
+    /** True while the user has the in-app diagnose panel open. UI-only. */
+    private val _isDiagnosing = MutableStateFlow(false)
+    val isDiagnosing: StateFlow<Boolean> = _isDiagnosing.asStateFlow()
+
+    /** Most recent partial transcript, kept around while diagnosing so the panel can show it. */
+    val diagnosticPartial: StateFlow<String> = partialTranscript
+
+    /** Live audio level from the capture source, in dBFS (-60..0). */
+    val diagnosticLevelDb: StateFlow<Float> = audioCaptureSource.levelDb
+
+    /** Live capture stats, surfaced to the diagnose screen as a snapshot. */
+    val diagnosticStats: AudioDiagnostics.CaptureStats
+        get() = audioCaptureSource.stats
+
+    /** The current Vosk model path, or null if no model is installed. */
+    val diagnosticModelPath: String? get() = modelStore.installedModelPath()
+
+    /** The size of the installed Vosk model in MB, or null if no model is installed. */
+    val diagnosticModelSizeMb: Double? get() = modelStore.installedModelSizeMb()
 
     private var pendingIntent: AppIntent? = null
     private var awaitingAlarmTime = false
@@ -288,6 +309,44 @@ class AssistantViewModel @Inject constructor(
             audioCaptureSource.stop()
             sttIntegrator.stopTranscription()
         }
+    }
+
+    // ------------------------------------------------------------ diagnostics
+
+    /**
+     * Long-pressing the orb from idle opens the in-app diagnose panel. The assistant
+     * state machine is not engaged: the orb does not start listening, the partial
+     * transcript is not reset, and the user can back out without side effects. The
+     * point of this panel is to let the user answer "why is my STT bad" by reading
+     * what the app actually heard, not by guessing from a transcript.
+     */
+    fun openDiagnostics() {
+        if (_isDiagnosing.value) return
+        _isDiagnosing.value = true
+    }
+
+    fun closeDiagnostics() {
+        _isDiagnosing.value = false
+    }
+
+    /**
+     * Writes the last 10 seconds of captured audio to `Download/jarvis_diagnose_<ts>.wav`.
+     * Returns the file path on success, or null if there is nothing in the buffer or
+     * the write failed. The file is a well-formed 16-bit mono PCM WAV at 16 kHz;
+     * `MediaPlayer`, `ffplay`, and macOS QuickTime play it back without complaint.
+     *
+     * The diagnose screen uses this as the "Save what the mic actually heard" button:
+     * if the transcript is wrong and the saved file is clear, the model is the
+     * problem; if the saved file is muffled or clipped, the mic is.
+     */
+    fun saveLastTenSeconds(): String? {
+        val downloads = android.os.Environment.getExternalStoragePublicDirectory(
+            android.os.Environment.DIRECTORY_DOWNLOADS
+        )
+        val timestamp = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US)
+            .format(java.util.Date())
+        val file = java.io.File(downloads, "jarvis_diagnose_$timestamp.wav")
+        return if (audioCaptureSource.saveRollingBuffer(file)) file.absolutePath else null
     }
 
     // ------------------------------------------------------------- the brain
