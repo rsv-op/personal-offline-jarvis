@@ -1,13 +1,17 @@
 package com.example.voiceassistant.stt
 
+import com.example.voiceassistant.memory.DeviceMemory
 import org.json.JSONObject
 import org.vosk.Model
 import org.vosk.Recognizer
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
+import javax.inject.Inject
 
 /** Offline Vosk adapter. The model directory is provisioned locally and never fetched by the app. */
-class VoskSttEngine : SttEngine {
+class VoskSttEngine @Inject constructor(
+    private val memoryBudget: DeviceMemory
+) : SttEngine {
     private var model: Model? = null
     private var recognizer: Recognizer? = null
     private var endpointResult: String? = null
@@ -22,6 +26,14 @@ class VoskSttEngine : SttEngine {
         // native loader, which surfaced as a generic "could not initialise" message.
         val problem = ModelArchiveExtractor.describeModelProblem(modelDirectory)
         require(problem == null) { "Not a usable Vosk model at $modelPath: $problem" }
+
+        // Vosk's native loader mmaps the model and allocates recogniser state on top of it.
+        // A 2.3 GB lgraph model on a phone with 4 GB free RAM is right at the edge; if we
+        // go over, the kernel OOM-kills the process. 1.5× headroom keeps us safe.
+        val modelBytes = modelDirectory.walkTopDown().filter(File::isFile).sumOf(File::length)
+        memoryBudget.refusalReason(modelBytes, headroomMultiplier = 1.5)?.let { reason ->
+            throw IllegalStateException(reason)
+        }
 
         val loadedModel = Model(modelDirectory.absolutePath)
         try {

@@ -1,5 +1,8 @@
 package com.example.voiceassistant.ui
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -20,6 +23,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -30,6 +34,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -58,8 +63,12 @@ fun DiagnoseScreen(
     val stats = remember { viewModel.diagnosticStats }
     val modelPath = remember { viewModel.diagnosticModelPath }
     val modelSizeMb = remember { viewModel.diagnosticModelSizeMb }
+    val totalMemoryMb = remember(viewModel) { viewModel.memoryBudget.totalMemoryBytes / (1024 * 1024) }
+    val availableMemoryMb = remember(viewModel) { viewModel.memoryBudget.availableMemoryBytes / (1024 * 1024) }
+    val context = LocalContext.current
     var lastSavePath by remember { mutableStateOf<String?>(null) }
     var saveError by remember { mutableStateOf<String?>(null) }
+    var lastCopyState by remember { mutableStateOf<String?>(null) }
 
     // Re-read the stats every 250 ms while on this screen. Stats is a plain object, not
     // a flow, so we tick a clock to force recomposition.
@@ -127,6 +136,28 @@ fun DiagnoseScreen(
                 }
             }
 
+            SectionCard(title = "Memory") {
+                StatRow("Total RAM", "$totalMemoryMb MB")
+                StatRow("Available RAM", "$availableMemoryMb MB")
+                if (modelSizeMb != null) {
+                    val voskHeadroomMb = (modelSizeMb * 1.5).toInt()
+                    val safe = availableMemoryMb >= voskHeadroomMb
+                    StatRow(
+                        "Vosk model headroom (1.5×)",
+                        "$voskHeadroomMb MB needed",
+                        ok = safe
+                    )
+                    if (!safe) {
+                        Text(
+                            text = "This device may not have enough free RAM to load the installed Vosk model. " +
+                                "Close other apps and retry, or install a smaller model.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
+            }
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -145,6 +176,17 @@ fun DiagnoseScreen(
                     modifier = Modifier.testTag("DiagnoseSaveButton")
                 ) {
                     Text("Save last 10 s")
+                }
+                TextButton(
+                    onClick = {
+                        val text = viewModel.diagnosticSnapshot()
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clipboard.setPrimaryClip(ClipData.newPlainText("JARVIS diagnosis", text))
+                        lastCopyState = "Copied (${text.length} chars). Paste into the chat."
+                    },
+                    modifier = Modifier.testTag("DiagnoseCopyButton")
+                ) {
+                    Text("Copy diagnostics")
                 }
                 OutlinedButton(
                     onClick = onClose,
@@ -166,6 +208,13 @@ fun DiagnoseScreen(
                     text = saveError!!,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error
+                )
+            }
+            if (lastCopyState != null) {
+                Text(
+                    text = lastCopyState!!,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary
                 )
             }
         }
@@ -252,13 +301,18 @@ private fun SectionCard(title: String, content: @Composable () -> Unit) {
 }
 
 @Composable
-private fun StatRow(label: String, value: String) {
+private fun StatRow(label: String, value: String, ok: Boolean? = null) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
         Text(label, style = MaterialTheme.typography.bodyMedium)
-        Text(value, style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.End)
+        val tint = when (ok) {
+            true -> Color(0xFF10B981)
+            false -> MaterialTheme.colorScheme.error
+            null -> MaterialTheme.colorScheme.onBackground
+        }
+        Text(value, style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.End, color = tint)
     }
 }
 

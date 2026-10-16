@@ -18,7 +18,6 @@ import com.example.voiceassistant.generation.RuleBasedLocalTextGenerator
 import com.example.voiceassistant.nlp.IntentRouter
 import com.example.voiceassistant.nlp.NlpProcessor
 import com.example.voiceassistant.nlp.TextNormalizer
-import com.example.voiceassistant.stt.SttEngine
 import com.example.voiceassistant.stt.VoskSttEngine
 import com.example.voiceassistant.vault.AndroidKeystoreVaultCipher
 import com.example.voiceassistant.vault.JarvisMemory
@@ -74,10 +73,6 @@ object AssistantDiModule {
     @Provides
     fun provideStatusExecutor(provider: AssistantStatusProvider) =
         StatusExecutor(assistantStatus = { provider.describe() })
-
-    @Provides
-    @Singleton
-    fun provideSttEngine(): SttEngine = VoskSttEngine()
 
     @Provides
     @SpeechDispatcher
