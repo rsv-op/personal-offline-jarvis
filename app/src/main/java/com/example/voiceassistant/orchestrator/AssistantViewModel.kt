@@ -22,6 +22,7 @@ import com.example.voiceassistant.statemachine.AssistantUiState
 import com.example.voiceassistant.statemachine.AssistantUiStateMachine
 import com.example.voiceassistant.stt.AudioCaptureSource
 import com.example.voiceassistant.stt.AudioDiagnostics
+import com.example.voiceassistant.memory.DeviceMemory
 import com.example.voiceassistant.stt.OfflineSttIntegrator
 import com.example.voiceassistant.stt.SttEngine
 import com.example.voiceassistant.stt.SttEvent
@@ -73,6 +74,7 @@ class AssistantViewModel @Inject constructor(
     private val localGenerationModelStore: LocalGenerationModelStore,
     private val brain: OnDeviceBrain,
     private val memory: JarvisMemory,
+    val memoryBudget: com.example.voiceassistant.memory.DeviceMemory,
     /** Injected (never defaulted) so Dagger sees a single, fully-specified constructor. */
     @SpeechDispatcher private val speechDispatcher: kotlinx.coroutines.CoroutineDispatcher
 ) : ViewModel() {
@@ -347,6 +349,38 @@ class AssistantViewModel @Inject constructor(
             .format(java.util.Date())
         val file = java.io.File(downloads, "jarvis_diagnose_$timestamp.wav")
         return if (audioCaptureSource.saveRollingBuffer(file)) file.absolutePath else null
+    }
+
+    /**
+     * Builds a plain-text diagnostic snapshot suitable for pasting into a chat. The
+     * diagnose screen puts this on the clipboard; it is the user's "build report" so
+     * I can read the actual numbers from the device instead of guessing.
+     */
+    fun diagnosticSnapshot(): String {
+        val sb = StringBuilder()
+        val totalMb = memoryBudget.totalMemoryBytes / (1024 * 1024)
+        val availableMb = memoryBudget.availableMemoryBytes / (1024 * 1024)
+        val modelPath = modelStore.installedModelPath()
+        val modelSizeMb = modelStore.installedModelSizeMb()
+        val replyModelPath = localGenerationModelStore.installedModelPath()
+        val stats = audioCaptureSource.stats
+        sb.appendLine("JARVIS diagnosis")
+        sb.appendLine("-----------------")
+        sb.appendLine("Device: total RAM ${totalMb} MB, available ${availableMb} MB")
+        sb.appendLine("Vosk model: ${modelPath ?: "(not installed)"}")
+        if (modelSizeMb != null) sb.appendLine("Vosk model size: %.1f MB".format(modelSizeMb))
+        sb.appendLine("Reply model: ${replyModelPath ?: "(not installed)"}")
+        replyModelPath?.let {
+            val f = java.io.File(it)
+            if (f.isFile) sb.appendLine("Reply model size: %.1f MB".format(f.length() / (1024.0 * 1024.0)))
+        }
+        sb.appendLine("Mic level (right now): ${audioCaptureSource.levelDb.value} dBFS")
+        sb.appendLine("Capture: delivered=${stats.framesDelivered} zeroByteReads=${stats.framesReadZero} readErrors=${stats.readErrors}")
+        sb.appendLine("Average read latency: ${stats.averageReadLatencyMicros} µs/frame")
+        sb.appendLine("Sample rate: ${com.example.voiceassistant.stt.AudioCaptureSource.SAMPLE_RATE_HZ} Hz")
+        val partial = partialTranscript.value
+        if (partial.isNotBlank()) sb.appendLine("Last partial transcript: $partial")
+        return sb.toString()
     }
 
     // ------------------------------------------------------------- the brain

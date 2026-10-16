@@ -77,7 +77,12 @@ object AssistantDiModule {
 
     @Provides
     @Singleton
-    fun provideSttEngine(): SttEngine = VoskSttEngine()
+    fun provideSttEngine(engine: VoskSttEngine): SttEngine = engine
+
+    @Provides
+    @Singleton
+    fun provideDeviceMemory(budget: com.example.voiceassistant.memory.MemoryBudget):
+        com.example.voiceassistant.memory.DeviceMemory = budget
 
     @Provides
     @SpeechDispatcher

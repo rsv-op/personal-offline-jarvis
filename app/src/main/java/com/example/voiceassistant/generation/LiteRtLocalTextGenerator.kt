@@ -1,6 +1,7 @@
 package com.example.voiceassistant.generation
 
 import android.content.Context
+import com.example.voiceassistant.memory.DeviceMemory
 import com.google.ai.edge.litertlm.Backend
 import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.ConversationConfig
@@ -13,6 +14,7 @@ import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -20,7 +22,8 @@ import javax.inject.Singleton
 @Singleton
 class LiteRtLocalTextGenerator @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val modelStore: LocalGenerationModelStore
+    private val modelStore: LocalGenerationModelStore,
+    private val memoryBudget: DeviceMemory
 ) : LocalTextGenerator {
     private val engineMutex = Mutex()
     private var engine: Engine? = null
@@ -70,6 +73,17 @@ class LiteRtLocalTextGenerator @Inject constructor(
         if (currentEngine?.isInitialized() == true) currentEngine.close()
         engine = null
         loadedModelPath = null
+
+        // Refuse to load a model the device cannot hold. The kernel will OOM-kill us if
+        // we try to load a 2 GB LiteRT model on a phone with 4 GB free RAM, and on some
+        // devices that takes down the whole OS. 2.5× headroom covers the model plus the
+        // KV cache LiteRT allocates on top of it; 2× was tried first and was still too
+        // tight on the user's device.
+        val modelFile = File(modelPath)
+        val modelBytes = if (modelFile.isFile) modelFile.length() else 0L
+        memoryBudget.refusalReason(modelBytes, headroomMultiplier = 2.5)?.let { reason ->
+            throw IllegalStateException(reason)
+        }
 
         val newEngine = Engine(
             EngineConfig(

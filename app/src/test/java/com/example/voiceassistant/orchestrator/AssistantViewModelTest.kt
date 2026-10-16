@@ -73,6 +73,7 @@ class AssistantViewModelTest {
     private lateinit var mockModelStore: VoskModelStore
     private lateinit var mockLocalTextGenerator: LocalTextGenerator
     private lateinit var mockLocalGenerationModelStore: LocalGenerationModelStore
+    private lateinit var mockMemoryBudget: com.example.voiceassistant.memory.DeviceMemory
     private lateinit var classifier: AiMatrixClassifier
     private lateinit var memory: JarvisMemory
     private lateinit var brain: OnDeviceBrain
@@ -102,6 +103,9 @@ class AssistantViewModelTest {
         mockModelStore = mock()
         mockLocalTextGenerator = mock()
         mockLocalGenerationModelStore = mock()
+        // The view model only reads totalMemoryBytes/availableMemoryBytes from this, and
+        // the existing test surface never inspects them, so a plain Mockito mock is fine.
+        mockMemoryBudget = mock()
 
         frames = MutableSharedFlow(extraBufferCapacity = 4)
         doReturn(frames).whenever(mockAudioCaptureSource).frames
@@ -154,6 +158,7 @@ class AssistantViewModelTest {
             localGenerationModelStore = mockLocalGenerationModelStore,
             brain = brain,
             memory = memory,
+            memoryBudget = mockMemoryBudget,
             speechDispatcher = dispatcher
         ) as T
         }
