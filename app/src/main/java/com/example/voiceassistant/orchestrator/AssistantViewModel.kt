@@ -75,6 +75,7 @@ class AssistantViewModel @Inject constructor(
     private val brain: OnDeviceBrain,
     private val memory: JarvisMemory,
     val memoryBudget: com.example.voiceassistant.memory.DeviceMemory,
+    private val systemMetricsCollector: com.example.voiceassistant.telematics.SystemMetricsCollector,
     /** Injected (never defaulted) so Dagger sees a single, fully-specified constructor. */
     @SpeechDispatcher private val speechDispatcher: kotlinx.coroutines.CoroutineDispatcher
 ) : ViewModel() {
@@ -125,6 +126,23 @@ class AssistantViewModel @Inject constructor(
     /** True while the user has the in-app diagnose panel open. UI-only. */
     private val _isDiagnosing = MutableStateFlow(false)
     val isDiagnosing: StateFlow<Boolean> = _isDiagnosing.asStateFlow()
+
+    /**
+     * Live telematics stream. The collector reads device memory, CPU, battery, thermal
+     * status, and process info on every tick of the 1 Hz ticker; the screen consumes
+     * the resulting flow. A small ring buffer of recent CPU samples is kept alongside
+     * the live snapshot for the sparkline.
+     */
+    val telematics: StateFlow<com.example.voiceassistant.telematics.TelematicsSnapshot> =
+        com.example.voiceassistant.telematics.TelematicsTicker(
+            collector = systemMetricsCollector,
+            scope = viewModelScope
+        ).flow
+
+    /** Last 60 CPU samples (oldest first) for the sparkline. Refreshed by the ticker. */
+    val cpuHistory: StateFlow<FloatArray> =
+        com.example.voiceassistant.telematics.TelematicsTicker
+            .cpuHistoryFor(viewModelScope, systemMetricsCollector)
 
     /** Most recent partial transcript, kept around while diagnosing so the panel can show it. */
     val diagnosticPartial: StateFlow<String> = partialTranscript
