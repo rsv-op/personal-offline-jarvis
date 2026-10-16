@@ -132,17 +132,25 @@ class AssistantViewModel @Inject constructor(
      * status, and process info on every tick of the 1 Hz ticker; the screen consumes
      * the resulting flow. A small ring buffer of recent CPU samples is kept alongside
      * the live snapshot for the sparkline.
+     *
+     * The ticker is **lazy**: it only starts running while at least one consumer is
+     * actively subscribed (see [com.example.voiceassistant.telematics.TelematicsTicker]).
+     * When the diagnose screen is not open, no 1 Hz coroutine is alive, which keeps
+     * the unit-test dispatcher from being held by an infinite loop and lets the
+     * Robolectric Compose tests in the same JVM fork render without OOMing.
      */
-    val telematics: StateFlow<com.example.voiceassistant.telematics.TelematicsSnapshot> =
+    private val telematicsTicker: com.example.voiceassistant.telematics.TelematicsTicker =
         com.example.voiceassistant.telematics.TelematicsTicker(
             collector = systemMetricsCollector,
             scope = viewModelScope
-        ).flow
+        )
+
+    /** Live snapshot of the device's memory, CPU, storage, battery, thermal, and process info. */
+    val telematics: StateFlow<com.example.voiceassistant.telematics.TelematicsSnapshot> =
+        telematicsTicker.flow
 
     /** Last 60 CPU samples (oldest first) for the sparkline. Refreshed by the ticker. */
-    val cpuHistory: StateFlow<FloatArray> =
-        com.example.voiceassistant.telematics.TelematicsTicker
-            .cpuHistoryFor(viewModelScope, systemMetricsCollector)
+    val cpuHistory: StateFlow<FloatArray> = telematicsTicker.cpuHistory
 
     /** Most recent partial transcript, kept around while diagnosing so the panel can show it. */
     val diagnosticPartial: StateFlow<String> = partialTranscript

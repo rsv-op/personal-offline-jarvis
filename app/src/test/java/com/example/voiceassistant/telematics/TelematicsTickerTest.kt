@@ -1,42 +1,53 @@
 package com.example.voiceassistant.telematics
 
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class TelematicsTickerTest {
 
     @Test
-    fun `cpu history is bounded and ordered oldest first`() = runBlocking {
-        val scope = CoroutineScope(Dispatchers.Unconfined + SupervisorJob())
+    fun `cpu history is bounded and ordered oldest first`() = runTest {
+        val counter = Counter()
+        // Use the test scope itself as the ticker's scope so the virtual clock
+        // controls the delay() inside the upstream flow. The collector is invoked
+        // only while at least one subscriber is alive; the test subscribes for the
+        // duration of the call and then cancels.
+        val ticker = TelematicsTicker(counter, this, intervalMillis = 5L)
+        val job = launch { ticker.flow.collect { /* keep the ticker subscribed */ } }
         try {
-            val counter = Counter()
-            val ticker = TelematicsTicker(counter, scope, intervalMillis = 5L)
-            // Wait for at least CPU_HISTORY_SIZE + 5 samples to push the oldest out.
-            delay(400L)
+            // Advance the virtual clock by 400 ms; with a 5 ms interval this
+            // produces ~80 ticks without allocating any real coroutine state.
+            advanceTimeBy(400L)
+            runCurrent()
             val samples = ticker.cpuHistory.value
             assertTrue("expected many samples, got ${samples.size}", samples.size >= 5)
             assertTrue("history must not exceed CPU_HISTORY_SIZE", samples.size <= TelematicsTicker.CPU_HISTORY_SIZE)
             // Latest sample should be the most recent collector value.
             assertEquals(counter.lastCpu.toFloat(), samples.last(), 0.01f)
         } finally {
-            scope.cancel()
+            job.cancelAndJoin()
         }
     }
 
     @Test
-    fun `an empty collector returns the empty snapshot placeholder`() = runBlocking {
-        val scope = CoroutineScope(Dispatchers.Unconfined + SupervisorJob())
+    fun `an empty collector returns the empty snapshot placeholder`() = runTest {
+        // Same as the first test but no subscription: the initial value of the flow
+        // is the empty placeholder. The ticker is constructed in a private scope that
+        // is cancelled at the end so no upstream coroutine leaks.
+        val scope = CoroutineScope(this.coroutineContext + kotlinx.coroutines.SupervisorJob())
         try {
             val ticker = TelematicsTicker(FailingCollector(), scope, intervalMillis = 50L)
-            // First sample lands almost immediately. Even before that, the value is
-            // the empty placeholder (zeros), not a crash.
             val first = ticker.flow.value
             assertEquals(0L, first.memory.totalBytes)
             assertEquals(0L, first.memory.availableBytes)
