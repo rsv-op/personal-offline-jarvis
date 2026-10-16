@@ -70,13 +70,17 @@ class TelematicsTickerTest {
     private class FailingCollector : SystemMetricsCollector {
         override fun snapshot(): TelematicsSnapshot = throw RuntimeException("simulated failure")
     }
-
-    internal fun blankSnapshot(): TelematicsSnapshot = TelematicsSnapshot(
-        memory = TelematicsSnapshot.MemorySection(0L, 0L, 0L, false, 0L, 0L, 0L),
-        storage = TelematicsSnapshot.StorageSection(0L, 0L, 0L),
-        cpu = TelematicsSnapshot.CpuSection(0f, 0f, emptyList(), 0L, 0L, 0L),
-        battery = TelematicsSnapshot.BatterySection(-1, false, "unknown", 0f, 0, 0L, "unknown"),
-        thermal = TelematicsSnapshot.ThermalSection("UNAVAILABLE", -1),
-        process = TelematicsSnapshot.ProcessSection(0L, "", "?", 0L, 0, 0)
-    )
 }
+
+/**
+ * File-level helper so the non-inner [Counter] / [FailingCollector] classes
+ * (which have no enclosing instance) can construct a blank snapshot.
+ */
+internal fun blankSnapshot(): TelematicsSnapshot = TelematicsSnapshot(
+    memory = TelematicsSnapshot.MemorySection(0L, 0L, 0L, false, 0L, 0L, 0L),
+    storage = TelematicsSnapshot.StorageSection(0L, 0L, 0L),
+    cpu = TelematicsSnapshot.CpuSection(0f, 0f, emptyList(), 0L, 0L, 0L),
+    battery = TelematicsSnapshot.BatterySection(-1, false, "unknown", 0f, 0, 0L, "unknown"),
+    thermal = TelematicsSnapshot.ThermalSection("UNAVAILABLE", -1),
+    process = TelematicsSnapshot.ProcessSection(0L, "", "?", 0L, 0, 0)
+)
