@@ -135,10 +135,10 @@ class AssistantViewModel @Inject constructor(
         get() = audioCaptureSource.stats
 
     /** The current Vosk model path, or null if no model is installed. */
-    val diagnosticModelPath: String? get() = voskModelStore.installedModelPath()
+    val diagnosticModelPath: String? get() = modelStore.installedModelPath()
 
     /** The size of the installed Vosk model in MB, or null if no model is installed. */
-    val diagnosticModelSizeMb: Double? get() = voskModelStore.installedModelSizeMb()
+    val diagnosticModelSizeMb: Double? get() = modelStore.installedModelSizeMb()
 
     private var pendingIntent: AppIntent? = null
     private var awaitingAlarmTime = false
