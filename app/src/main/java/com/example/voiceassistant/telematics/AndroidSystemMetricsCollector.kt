@@ -114,7 +114,7 @@ class AndroidSystemMetricsCollector @Inject constructor(
     }
 
     @Volatile private var lastOverallCpu: ProcParsers.CpuTimes? = null
-    @Volatile private var lastAppJiffies: Long = 0L
+    @Volatile private var lastAppCpuMs: Long = 0L
     @Volatile private var lastSampleElapsed: Long = 0L
 
     private fun readProcStatDetailed(): ProcParsers.CpuTimes? = try {
@@ -132,19 +132,20 @@ class AndroidSystemMetricsCollector @Inject constructor(
             return 0f to 0L
         }
         val parsed = ProcParsers.parseProcessStat(statText) ?: return 0f to 0L
+        // Read elapsed CPU time in milliseconds (Android API; ignores the
+        // jiffies-per-second question that broke us on devices with a non-100
+        // _SC_CLK_TCK). 0L when this is the first sample so we have no delta yet.
         val now = SystemClock.elapsedRealtime()
-        val lastJiffies = lastAppJiffies
+        val cpuMs = android.os.Process.getElapsedCpuTime()
+        val lastCpuMs = lastAppCpuMs
         val lastElapsed = lastSampleElapsed
-        val cpuClockTicksPerSecond = 100L // Android default
-        val appPercent = if (lastElapsed > 0 && now > lastElapsed && lastJiffies > 0) {
-            val deltaJiffies = (parsed.totalJiffies() - lastJiffies).coerceAtLeast(0)
+        val appPercent = if (lastElapsed > 0 && now > lastElapsed && lastCpuMs > 0) {
+            val deltaCpuMs = (cpuMs - lastCpuMs).coerceAtLeast(0)
             val deltaMs = now - lastElapsed
-            // CPU% = (deltaJiffies / clock) / deltaMs
-            val percent = (deltaJiffies.toDouble() / cpuClockTicksPerSecond.toDouble()) /
-                (deltaMs.toDouble() / 1000.0)
+            val percent = deltaCpuMs.toDouble() / deltaMs.toDouble()
             (percent * 100.0).coerceIn(0.0, 100.0).toFloat()
         } else 0f
-        lastAppJiffies = parsed.totalJiffies()
+        lastAppCpuMs = cpuMs
         lastSampleElapsed = now
         return appPercent to parsed.numThreads
     }
