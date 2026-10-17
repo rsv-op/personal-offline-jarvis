@@ -77,7 +77,7 @@ fun HereticWaveform(
         )
     }
 
-    Canvas(modifier = modifier.then(defaultMinSize(minHeight = height))) {
+    Canvas(modifier = modifier.defaultMinSize(minHeight = height)) {
         drawHereticWaveform(
             phase = phase,
             levelDb = smoothed.value

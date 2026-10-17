@@ -54,6 +54,7 @@ import kotlin.math.min
  * so a user who taps the dark space between rings still gets a press
  * response.
  */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun HereticOrb(
     uiState: AssistantUiState,
@@ -109,27 +110,6 @@ fun HereticOrb(
     }
     val pulseValue = pulse.value
 
-    // Pre-build the two static paths so we are not allocating geometry on
-    // every frame. Coordinates are in normalised units; the draw call scales
-    // them by the sigil radius.
-    val diamond = remember {
-        Path().apply {
-            moveTo(0f, -0.55f)
-            lineTo(0.32f, 0f)
-            lineTo(0f, 0.55f)
-            lineTo(-0.32f, 0f)
-            close()
-        }
-    }
-    val cross = remember {
-        Path().apply {
-            moveTo(0f, -0.18f)
-            lineTo(0f, 0.18f)
-            moveTo(-0.13f, 0f)
-            lineTo(0.13f, 0f)
-        }
-    }
-
     Box(
         modifier = modifier
             .size(size)
@@ -147,11 +127,7 @@ fun HereticOrb(
                 ringRotationMagenta = ringRotationMagenta,
                 ringRotationOuter = ringRotationOuter,
                 pulse = pulseValue,
-                isActive = isActive,
-                diamond = diamond,
-                cross = cross,
-                center = Offset(size.width / 2f, size.height / 2f),
-                baseRadius = min(size.width, size.height) / 2f
+                isActive = isActive
             )
         }
     }
@@ -162,12 +138,12 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawHereticOrb(
     ringRotationMagenta: Float,
     ringRotationOuter: Float,
     pulse: Float,
-    isActive: Boolean,
-    diamond: Path,
-    cross: Path,
-    center: Offset,
-    baseRadius: Float
+    isActive: Boolean
 ) {
+    val w = size.width
+    val h = size.height
+    val center = Offset(w / 2f, h / 2f)
+    val baseRadius = min(w, h) / 2f
     val r = baseRadius * pulse
     // A small inset so the outermost ring sits just inside the box edge.
     val outerR = r * 0.96f
@@ -247,24 +223,32 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawHereticOrb(
 
     // Sigil: a diamond outline with a cross inside, drawn in [JarvisCyan] for
     // high contrast against the magenta core. The sigil is rotated to match
-    // the inner magenta ring so it tracks that ring visually. We translate
-    // the pre-built paths to the centre and scale by `sigilR`.
+    // the inner magenta ring so it tracks that ring visually. We rebuild the
+    // sigil in pixel space every frame because the cached normalised paths
+    // cannot be cheaply re-anchored in Compose's [Path] API; the geometry
+    // is tiny (5 points for the diamond, 4 for the cross) so the cost is
+    // negligible.
     rotate(ringRotationMagenta, pivot = center) {
-        val scaledDiamond = Path().apply {
-            addPath(diamond)
-            // The cached path is in normalised units. Scale to sigilR and
-            // translate to the orb's centre.
-        }.scaleAndCentre(sigilR, center)
+        val diamond = Path().apply {
+            moveTo(center.x, center.y - sigilR * 0.55f)
+            lineTo(center.x + sigilR * 0.32f, center.y)
+            lineTo(center.x, center.y + sigilR * 0.55f)
+            lineTo(center.x - sigilR * 0.32f, center.y)
+            close()
+        }
         drawPath(
-            path = scaledDiamond,
+            path = diamond,
             color = JarvisCyan,
             style = Stroke(width = 1.4.dp.toPx())
         )
-        val scaledCross = Path().apply {
-            addPath(cross)
-        }.scaleAndCentre(sigilR, center)
+        val cross = Path().apply {
+            moveTo(center.x, center.y - sigilR * 0.18f)
+            lineTo(center.x, center.y + sigilR * 0.18f)
+            moveTo(center.x - sigilR * 0.13f, center.y)
+            lineTo(center.x + sigilR * 0.13f, center.y)
+        }
         drawPath(
-            path = scaledCross,
+            path = cross,
             color = JarvisCyan,
             style = Stroke(
                 width = 1.2.dp.toPx(),
@@ -279,22 +263,4 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawHereticOrb(
         radius = 1.4.dp.toPx(),
         center = center
     )
-}
-
-/**
- * Returns a copy of [Path] scaled by [scale] and translated to [centre].
- * Compose's [Path] is mutable so this re-builds the path rather than
- * mutating the source; the result is a fresh, short-lived path that the
- * caller passes to [drawPath].
- */
-private fun Path.scaleAndCentre(scale: Float, centre: Offset): Path {
-    val out = Path()
-    // [Path.addPath] with a matrix lets us scale and translate in one step
-    // without enumerating the points manually.
-    val matrix = android.graphics.Matrix().apply {
-        setScale(scale, scale)
-        postTranslate(centre.x, centre.y)
-    }
-    out.addPath(this, matrix)
-    return out
 }

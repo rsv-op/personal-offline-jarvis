@@ -55,6 +55,7 @@ enum class TeachAction(val label: String, val title: String) {
     DEVICE_STATUS("DEVICE_STATUS", "Device status")
 }
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun AssistantApp(
     viewModel: AssistantViewModel,
@@ -126,6 +127,7 @@ fun AssistantApp(
 }
 
 @Composable
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 fun AssistantScreen(
     uiState: AssistantUiState,
     transcript: String,
