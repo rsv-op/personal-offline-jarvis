@@ -92,7 +92,26 @@ class AudioCaptureSource @Inject constructor(
             SAMPLE_RATE_HZ,
             AudioFormat.CHANNEL_IN_MONO,
             AudioFormat.ENCODING_PCM_16BIT,
-            maxOf(minimumBufferBytes, FRAME_SIZE * Short.SIZE_BYTES * 2)
+            // The OS-level buffer must be substantially larger than one
+            // [FRAME_SIZE]. With a 100 ms frame, the previous sizing
+            // (max(min, 2 * FRAME_SIZE) ≈ 6.4 KB / 200 ms) left zero
+            // slack: every READ_BLOCKING call returned in roughly the
+            // time it took to fill one frame, plus 30 ms of kernel /
+            // driver scheduling latency, so the capture path ran at the
+            // edge of its audio clock and any blip (GC, IO contention,
+            // a phone call) doubled the read latency. The user's own
+            // diagnosis showed 94 ms/frame for a 100 ms frame on this
+            // device.
+            //
+            // 20× FRAME_SIZE = 64 KB = 2 s of audio. That gives the
+            // driver enough room to keep the buffer primed so each
+            // [AudioRecord.read] returns in a few ms with a fresh frame,
+            // and the rolling buffer underneath is no longer at risk of
+            // fragmenting the audio that Vosk sees.
+            maxOf(
+                minimumBufferBytes,
+                FRAME_SIZE * Short.SIZE_BYTES * 2 * 20
+            )
         )
         if (audioRecord.state != AudioRecord.STATE_INITIALIZED) {
             audioRecord.release()
