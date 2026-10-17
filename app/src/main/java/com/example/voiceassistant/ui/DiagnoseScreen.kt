@@ -3,6 +3,7 @@ package com.example.voiceassistant.ui
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -157,6 +158,12 @@ private fun DiagnoseTab(
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
         AudioLevelBar(levelDb = levelDb)
         MicStatusPill(levelDb = levelDb, framesDelivered = frames, ticker = ticker)
+        // Mic level history strip: a scrolling bar chart of the last
+        // ~15 seconds of audio levels, sampled on the 250 ms ticker. The
+        // user reads this as "is the mic alive?" — a live mic shows a
+        // moving, irregular waveform, a dead mic shows a flat line at
+        // the -60 dBFS floor.
+        MicLevelHistory(levelDb = levelDb, framesDelivered = frames, ticker = ticker)
 
         SectionCard(title = "Live partial transcript") {
             Text(
@@ -547,6 +554,95 @@ private fun MicStatusPill(levelDb: Float, framesDelivered: Long, ticker: Long) {
     // ticker is read to anchor the recomposition; the param keeps it in the recompose path.
     @Suppress("UNUSED_EXPRESSION") ticker
 }
+
+/**
+ * Scrolling history of recent audio levels. One bar per 250 ms `ticker`
+ * tick; the buffer holds the last [HISTORY_SIZE] samples (~15 s). When
+ * the mic is alive the bars dance around the level; when the mic is
+ * dead they freeze at the gray "no signal" floor.
+ *
+ * The whole strip is a single [Canvas] re-drawn on each recomposition.
+ * `framesDelivered > 0` flips the bar colour from gray to cyan to
+ * signal "the capture path is live", independent of how loud the
+ * signal is.
+ */
+@Composable
+private fun MicLevelHistory(
+    levelDb: Float,
+    framesDelivered: Long,
+    ticker: Long
+) {
+    // We re-key the remember on the ticker so a new sample is appended
+    // on every tick. Inside the key, levelDb is the just-arrived value.
+    val history = remember { ArrayDeque<Float>(HISTORY_SIZE + 1) }
+    androidx.compose.runtime.LaunchedEffect(ticker) {
+        // Don't pollute the history with the silent floor when the
+        // capture path isn't running. The user is going to look at this
+        // strip specifically to see whether anything is moving; an
+        // always-flat line at -60 dB is exactly the "no mic" answer
+        // they need, so we deliberately do not buffer silence.
+        if (framesDelivered > 0L) {
+            if (history.size >= HISTORY_SIZE) history.removeFirst()
+            history.addLast(levelDb)
+        }
+    }
+    val isLive = framesDelivered > 0L
+    val liveColor = Color(0xFF10B981)        // green - mic alive
+    val deadColor = Color(0xFF6B7280)        // gray - no signal
+    val trackColor = Color(0xFF1F2937)
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text("Mic level — last 15 s", style = MaterialTheme.typography.labelLarge)
+            Text(
+                text = if (isLive) "LIVE" else "NO MIC",
+                style = MaterialTheme.typography.labelSmall,
+                color = if (isLive) liveColor else deadColor
+            )
+        }
+        Spacer(modifier = Modifier.height(4.dp))
+        Canvas(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp)
+                .clip(RoundedCornerShape(4.dp))
+                .background(trackColor)
+        ) {
+            if (history.isEmpty()) {
+                // Render the silent floor so the user sees a flat line
+                // even before the first sample arrives.
+                val baseY = size.height * (1f - SILENT_FRACTION)
+                drawLine(
+                    color = deadColor.copy(alpha = 0.5f),
+                    start = androidx.compose.ui.geometry.Offset(0f, baseY),
+                    end = androidx.compose.ui.geometry.Offset(size.width, baseY),
+                    strokeWidth = 1.5f
+                )
+                return@Canvas
+            }
+            val n = history.size
+            val barWidth = size.width / HISTORY_SIZE
+            for (i in 0 until n) {
+                val sample = history.elementAt(i)
+                // Map -60..0 dBFS to 0..1 vertically.
+                val fraction = ((sample + 60f) / 60f).coerceIn(0f, 1f)
+                val barHeight = size.height * fraction
+                val x = i * barWidth
+                drawRect(
+                    color = if (isLive) liveColor else deadColor,
+                    topLeft = androidx.compose.ui.geometry.Offset(x, size.height - barHeight),
+                    size = androidx.compose.ui.geometry.Size(barWidth - 1f, barHeight)
+                )
+            }
+        }
+    }
+}
+
+private const val HISTORY_SIZE = 60        // 60 * 250 ms = 15 s
+private const val SILENT_FRACTION = 0.05f  // -60 dBFS renders as 5% of the strip height
 
 @Composable
 private fun SectionCard(title: String, content: @Composable () -> Unit) {
