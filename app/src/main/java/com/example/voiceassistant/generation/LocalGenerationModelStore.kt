@@ -38,8 +38,28 @@ class LocalGenerationModelStore @Inject constructor(
         )?.use { cursor ->
             if (cursor.moveToFirst()) cursor.getString(0) else null
         }
-        require(displayName == null || displayName.endsWith(MODEL_EXTENSION, ignoreCase = true)) {
-            "Choose a LiteRT-LM .litertlm model file"
+        require(
+            displayName == null ||
+                displayName.endsWith(MODEL_EXTENSION, ignoreCase = true) ||
+                displayName.endsWith(APK_EXTENSION, ignoreCase = true)
+        ) {
+            "Choose a LiteRT-LM .litertlm model file or an .apk that contains one"
+        }
+
+        // If the user picked an APK, extract the first .litertlm asset from
+        // it. The APK is just a zip; the model is in the assets/ folder.
+        // This lets the user download a model-bundling APK in the system
+        // browser (which has its own INTERNET permission) and then point
+        // the import flow at it without JARVIS itself needing the
+        // INTERNET permission. The existing offline-first posture is
+        // preserved: no network code is added to the app.
+        val sourceInput = if (displayName?.endsWith(APK_EXTENSION, ignoreCase = true) == true) {
+            val rawInput = context.contentResolver.openInputStream(uri)
+                ?: throw IllegalArgumentException("Could not read the selected APK")
+            openLitertlmInApk(rawInput)
+        } else {
+            context.contentResolver.openInputStream(uri)
+                ?: throw IllegalArgumentException("Could not read the selected model file")
         }
 
         check(modelsDirectory.exists() || modelsDirectory.mkdirs()) {
@@ -48,11 +68,14 @@ class LocalGenerationModelStore @Inject constructor(
         val stagingFile = File(modelsDirectory, "local-reply-model.importing")
         stagingFile.delete()
         try {
-            val input = context.contentResolver.openInputStream(uri)
-                ?: throw IllegalArgumentException("Could not read the selected model file")
-            input.use { source -> copyLimited(source, stagingFile) }
+            sourceInput.use { source -> copyLimited(source, stagingFile) }
             require(stagingFile.isFile && stagingFile.length() > 0L) {
-                "The selected model file is empty"
+                val cause = if (displayName?.endsWith(APK_EXTENSION, ignoreCase = true) == true) {
+                    "The selected APK does not contain a .litertlm model in its assets/"
+                } else {
+                    "The selected model file is empty"
+                }
+                cause
             }
 
             val backupFile = File(modelsDirectory, "local-reply-model.previous")
@@ -69,6 +92,50 @@ class LocalGenerationModelStore @Inject constructor(
         } finally {
             stagingFile.delete()
         }
+    }
+
+    /**
+     * Reads the [input] as a zip stream and returns a single [InputStream]
+     * that yields the bytes of the first `.litertlm` entry found in the
+     * archive. APKs are zip files and LiteRT-LM models are usually
+     * placed under `assets/`, so the first `.litertlm` entry is almost
+     * always the right one.
+     *
+     * The returned stream must be closed by the caller. The underlying
+     * zip entry is read lazily; the caller only pays for the bytes it
+     * actually copies into the staging file.
+     */
+    private fun openLitertlmInApk(input: InputStream): InputStream {
+        val buffer = java.io.ByteArrayOutputStream()
+        val zip = java.util.zip.ZipInputStream(input)
+        var entry: java.util.zip.ZipEntry? = zip.nextEntry
+        while (entry != null) {
+            if (!entry.isDirectory && entry.name.endsWith(MODEL_EXTENSION, ignoreCase = true)) {
+                // Drain the entry into a byte buffer. We do this in one
+                // shot so the caller can close the zip stream after
+                // we've finished the entry. The size cap
+                // [MAX_MODEL_BYTES] still applies; if the entry is
+                // larger, the import will fail with a clear message.
+                val entryBytes = ByteArray(COPY_BUFFER_SIZE)
+                while (true) {
+                    val read = zip.read(entryBytes)
+                    if (read < 0) break
+                    require(buffer.size() + read <= MAX_MODEL_BYTES) {
+                        "Reply model exceeds the ${MAX_MODEL_BYTES / (1024 * 1024)} MB import limit"
+                    }
+                    buffer.write(entryBytes, 0, read)
+                }
+                zip.closeEntry()
+                zip.close()
+                return buffer.toByteArray().inputStream()
+            }
+            entry = zip.nextEntry
+        }
+        zip.close()
+        // No .litertlm found; return an empty stream so the caller's
+        // empty-file check produces a clear "no model inside the APK"
+        // message.
+        return java.io.ByteArrayInputStream(ByteArray(0))
     }
 
     private fun copyLimited(input: InputStream, destination: File) {
@@ -89,6 +156,7 @@ class LocalGenerationModelStore @Inject constructor(
 
     private companion object {
         const val MODEL_EXTENSION = ".litertlm"
+        const val APK_EXTENSION = ".apk"
         const val COPY_BUFFER_SIZE = 64 * 1024
         const val MAX_MODEL_BYTES = 4_000_000_000L
     }
