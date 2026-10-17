@@ -1,16 +1,7 @@
 package com.example.voiceassistant.ui
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,11 +12,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -41,12 +30,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -55,6 +44,7 @@ import com.example.voiceassistant.nlp.NlpProcessor
 import com.example.voiceassistant.orchestrator.AssistantViewModel
 import com.example.voiceassistant.statemachine.AssistantUiState
 import com.example.voiceassistant.vault.JarvisMemory
+import kotlinx.coroutines.launch
 
 /** Actions a phrase can be taught for; the labels match the ai-matrix intent labels. */
 enum class TeachAction(val label: String, val title: String) {
@@ -65,6 +55,7 @@ enum class TeachAction(val label: String, val title: String) {
     DEVICE_STATUS("DEVICE_STATUS", "Device status")
 }
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun AssistantApp(
     viewModel: AssistantViewModel,
@@ -74,6 +65,7 @@ fun AssistantApp(
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val transcript by viewModel.partialTranscript.collectAsStateWithLifecycle()
+    val levelDb by viewModel.diagnosticLevelDb.collectAsStateWithLifecycle()
     val lastUtterance by viewModel.lastUtterance.collectAsStateWithLifecycle()
     val modelStatus by viewModel.modelStatus.collectAsStateWithLifecycle()
     val modelSizeMb by viewModel.modelSizeMb.collectAsStateWithLifecycle()
@@ -110,6 +102,7 @@ fun AssistantApp(
                 onDeny = viewModel::denyAction,
                 onManualWake = viewModel::toggleListening,
                 onLongPress = viewModel::openDiagnostics,
+                levelDb = levelDb,
                 modelStatus = modelStatus,
                 replyModelStatus = replyModelStatus,
                 statusMessage = statusMessage,
@@ -134,12 +127,14 @@ fun AssistantApp(
 }
 
 @Composable
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 fun AssistantScreen(
     uiState: AssistantUiState,
     transcript: String,
     onConfirm: () -> Unit,
     onDeny: () -> Unit,
     onManualWake: () -> Unit,
+    levelDb: Float = -60f,
     modelStatus: String = "",
     replyModelStatus: String = "",
     statusMessage: String = "",
@@ -164,31 +159,75 @@ fun AssistantScreen(
         modifier = Modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.background
     ) {
+        // Pulled the scroll state out of the inline modifier so the corner
+        // TEACH / UPDATE labels at the bottom of the home screen can
+        // animate-scroll the column to the relevant section without
+        // pulling in any extra state machinery.
+        val scrollState = rememberScrollState()
+        val coroutineScope = rememberCoroutineScope()
+        // Two scroll anchors: one for the StatusCard (UPDATE) and one for
+        // the TeachPanel (TEACH). Bringing an anchor into view scrolls the
+        // outer [Column] so the anchor is visible; the BringIntoViewRequester
+        // is a stable object the [Modifier.bringIntoViewRequester] attaches
+        // to, so the request works even if the children re-compose.
+        val statusAnchor = remember { BringIntoViewRequester() }
+        val teachAnchor = remember { BringIntoViewRequester() }
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .safeDrawingPadding()
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(scrollState)
                 .padding(20.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Text(
-                text = "JARVIS",
-                style = MaterialTheme.typography.headlineMedium,
-                color = MaterialTheme.colorScheme.primary
+            HereticOrb(
+                uiState = uiState,
+                onClick = onManualWake,
+                onLongPress = onLongPress
             )
+
+            // Heretic title with a soft cyan glow. We stack three Texts in
+            // a Box so they overlap at the same position; the back layers
+            // are scaled up and very low alpha, producing a halo without a
+            // per-frame blur. No RenderEffect is used so this works on min
+            // SDK 26. The layers are z-stacked in drawing order: outer halo
+            // first, then mid halo, then the bright fill on top.
+            Spacer(modifier = Modifier.height(12.dp))
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = "HERETIC",
+                    style = MaterialTheme.typography.headlineMedium,
+                    color = JarvisCyan.copy(alpha = 0.10f),
+                    modifier = Modifier.graphicsLayer { scaleX = 1.08f; scaleY = 1.6f }
+                )
+                Text(
+                    text = "HERETIC",
+                    style = MaterialTheme.typography.headlineMedium,
+                    color = JarvisCyan.copy(alpha = 0.20f),
+                    modifier = Modifier.graphicsLayer { scaleX = 1.04f; scaleY = 1.3f }
+                )
+                Text(
+                    text = "HERETIC",
+                    style = MaterialTheme.typography.headlineMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
             Text(
                 text = "Private offline assistant • no internet permission",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f)
             )
 
-            Spacer(modifier = Modifier.height(20.dp))
-            AssistantOrb(
-                uiState = uiState,
-                onClick = onManualWake,
-                onLongPress = onLongPress
-            )
+            Spacer(modifier = Modifier.height(12.dp))
+            // The waveform reads the same audio level the diagnose screen
+            // shows, so the user sees a live signal when they are holding the
+            // orb and a flat line when they are not. When capturing is not
+            // active the level sits at -60 dB and the wave collapses to a
+            // thin line, which is the right "idle" presentation.
+            HereticWaveform(levelDb = levelDb, modifier = Modifier.fillMaxWidth())
 
             Spacer(modifier = Modifier.height(12.dp))
             Text(
@@ -270,13 +309,19 @@ fun AssistantScreen(
             }
 
             Spacer(modifier = Modifier.height(20.dp))
-            StatusCard(
-                modelStatus = modelStatus,
-                modelSizeMb = modelSizeMb,
-                brainStatus = brainStatus,
-                vaultStatus = vaultStatus,
-                replyModelStatus = replyModelStatus
-            )
+            // UPDATE anchor: the corner button at the bottom of the home
+            // screen calls statusAnchor.bringIntoView() to scroll this card
+            // into view. The empty Box is a single-element [Modifier] host
+            // for the requester; the StatusCard composable draws inside it.
+            Box(modifier = Modifier.bringIntoViewRequester(statusAnchor)) {
+                StatusCard(
+                    modelStatus = modelStatus,
+                    modelSizeMb = modelSizeMb,
+                    brainStatus = brainStatus,
+                    vaultStatus = vaultStatus,
+                    replyModelStatus = replyModelStatus
+                )
+            }
 
             Spacer(modifier = Modifier.height(12.dp))
             Row(
@@ -323,14 +368,53 @@ fun AssistantScreen(
             }
 
             Spacer(modifier = Modifier.height(20.dp))
-            TeachPanel(
-                lastUtterance = lastUtterance,
-                taughtPhrases = taughtPhrases,
-                onTeach = onTeach,
-                onTeachLast = onTeachLast,
-                onForget = onForget,
-                onForgetAll = onForgetAll
-            )
+            // TEACH anchor: same pattern as the UPDATE anchor above. The
+            // corner TEACH label calls teachAnchor.bringIntoView() to scroll
+            // the TeachPanel into view.
+            Box(modifier = Modifier.bringIntoViewRequester(teachAnchor)) {
+                TeachPanel(
+                    lastUtterance = lastUtterance,
+                    taughtPhrases = taughtPhrases,
+                    onTeach = onTeach,
+                    onTeachLast = onTeachLast,
+                    onForget = onForget,
+                    onForgetAll = onForgetAll
+                )
+            }
+
+            // Bottom-of-screen corner labels. The design shows TEACH on the
+            // left and UPDATE on the right; a [Row] with
+            // [Arrangement.SpaceBetween] lays them out exactly like that.
+            // Each label is a clickable Text: TEACH scrolls to the
+            // TeachPanel, UPDATE scrolls to the StatusCard.
+            Spacer(modifier = Modifier.height(28.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = "TEACH",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .testTag("TeachCornerLabel")
+                        .clickable {
+                            coroutineScope.launch { teachAnchor.bringIntoView() }
+                        }
+                        .padding(vertical = 8.dp, horizontal = 4.dp)
+                )
+                Text(
+                    text = "UPDATE",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .testTag("UpdateCornerLabel")
+                        .clickable {
+                            coroutineScope.launch { statusAnchor.bringIntoView() }
+                        }
+                        .padding(vertical = 8.dp, horizontal = 4.dp)
+                )
+            }
             Spacer(modifier = Modifier.height(24.dp))
         }
     }
@@ -393,7 +477,7 @@ private fun TeachPanel(
     ) {
         Column(modifier = Modifier.padding(14.dp)) {
             Text(
-                text = "Teach JARVIS",
+                text = "Teach Heretic",
                 style = MaterialTheme.typography.titleSmall,
                 color = MaterialTheme.colorScheme.primary
             )
@@ -482,77 +566,6 @@ private fun TeachPanel(
                 }
             }
         }
-    }
-}
-
-@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
-@Composable
-fun AssistantOrb(
-    uiState: AssistantUiState,
-    onClick: () -> Unit,
-    onLongPress: () -> Unit = {}
-) {
-    val isAnimating = uiState is AssistantUiState.Listening || uiState is AssistantUiState.Processing
-    val transition = rememberInfiniteTransition(label = "assistant-orb")
-    val scale by transition.animateFloat(
-        initialValue = 1f,
-        targetValue = if (isAnimating) 1.15f else 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 800, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "orb-scale"
-    )
-
-    val targetColor = when (uiState) {
-        AssistantUiState.Idle, AssistantUiState.ReturnToIdle -> Color(0xFF1F2937)
-        AssistantUiState.WakeDetected -> Color(0xFF0E7490)
-        AssistantUiState.Listening -> JarvisCyan
-        AssistantUiState.Processing -> Color(0xFFFBBF24)
-        AssistantUiState.NeedsConfirmation -> Color(0xFFF97316)
-        AssistantUiState.Executing -> Color(0xFF34D399)
-        AssistantUiState.Speaking -> Color(0xFFA78BFA)
-    }
-    val color by animateColorAsState(
-        targetValue = targetColor,
-        animationSpec = tween(500),
-        label = "orb-color"
-    )
-
-    Box(
-        modifier = Modifier
-            .size(120.dp)
-            .scale(scale)
-            .clip(CircleShape)
-            .background(color)
-            .combinedClickable(
-                onClick = onClick,
-                onLongClick = onLongPress
-            )
-            .testTag("AssistantOrb"),
-        contentAlignment = Alignment.Center
-    ) {
-        Text(
-            text = if (uiState is AssistantUiState.Listening) "STOP" else "TALK",
-            style = MaterialTheme.typography.labelLarge,
-            color = JarvisDeep
-        )
-    }
-
-    Spacer(modifier = Modifier.height(4.dp))
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Box(
-            modifier = Modifier
-                .size(8.dp)
-                .clip(RoundedCornerShape(4.dp))
-                .background(color)
-        )
-        Spacer(modifier = Modifier.width(6.dp))
-        Text(
-            text = "on-device",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f)
-        )
     }
 }
 
