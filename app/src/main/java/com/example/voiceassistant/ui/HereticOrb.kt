@@ -60,7 +60,7 @@ fun HereticOrb(
     uiState: AssistantUiState,
     onClick: () -> Unit,
     onLongPress: () -> Unit,
-    size: Dp = 220.dp,
+    size: Dp = 168.dp,
     modifier: Modifier = Modifier
 ) {
     // Two rotations in opposite directions for the cyan and magenta ring

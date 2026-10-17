@@ -180,31 +180,38 @@ fun AssistantScreen(
                 .padding(20.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            HereticOrb(
+                uiState = uiState,
+                onClick = onManualWake,
+                onLongPress = onLongPress
+            )
+
             // Heretic title with a soft cyan glow. We stack three Texts in
             // a Box so they overlap at the same position; the back layers
             // are scaled up and very low alpha, producing a halo without a
             // per-frame blur. No RenderEffect is used so this works on min
             // SDK 26. The layers are z-stacked in drawing order: outer halo
             // first, then mid halo, then the bright fill on top.
+            Spacer(modifier = Modifier.height(12.dp))
             Box(
                 contentAlignment = Alignment.Center,
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text(
                     text = "HERETIC",
-                    style = MaterialTheme.typography.headlineLarge,
+                    style = MaterialTheme.typography.headlineMedium,
                     color = JarvisCyan.copy(alpha = 0.10f),
                     modifier = Modifier.graphicsLayer { scaleX = 1.08f; scaleY = 1.6f }
                 )
                 Text(
                     text = "HERETIC",
-                    style = MaterialTheme.typography.headlineLarge,
+                    style = MaterialTheme.typography.headlineMedium,
                     color = JarvisCyan.copy(alpha = 0.20f),
                     modifier = Modifier.graphicsLayer { scaleX = 1.04f; scaleY = 1.3f }
                 )
                 Text(
                     text = "HERETIC",
-                    style = MaterialTheme.typography.headlineLarge,
+                    style = MaterialTheme.typography.headlineMedium,
                     color = MaterialTheme.colorScheme.primary
                 )
             }
@@ -212,13 +219,6 @@ fun AssistantScreen(
                 text = "Private offline assistant • no internet permission",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f)
-            )
-
-            Spacer(modifier = Modifier.height(24.dp))
-            HereticOrb(
-                uiState = uiState,
-                onClick = onManualWake,
-                onLongPress = onLongPress
             )
 
             Spacer(modifier = Modifier.height(12.dp))
