@@ -179,12 +179,18 @@ private fun DiagnoseTab(
         // visible. The user pastes diagnoses verbatim; the versionCode
         // in the pasted text tells us without guessing whether the
         // device is on v119 (no buffer fix) or v121+ (buffer fix).
-        Text(
-            text = "JARVIS build: $packageVersion",
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.testTag("DiagnoseBuildBanner")
-        )
+        Surface(
+            color = MaterialTheme.colorScheme.primaryContainer,
+            shape = RoundedCornerShape(8.dp),
+            modifier = Modifier.fillMaxWidth().testTag("DiagnoseBuildBanner")
+        ) {
+            Text(
+                text = "BUILD: $packageVersion",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                modifier = Modifier.padding(12.dp)
+            )
+        }
         AudioLevelBar(levelDb = levelDb)
         MicStatusPill(levelDb = levelDb, framesDelivered = frames, ticker = ticker)
         // Mic level history strip: a scrolling bar chart of the last
