@@ -35,7 +35,9 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.example.voiceassistant.statemachine.AssistantUiState
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlin.math.min
 
 /**
@@ -140,27 +142,29 @@ fun HereticOrb(
             //   * press held >= 3 s            -> onLongPress() (open Diagnose)
             //   * long-press fires once; the eventual release does nothing
             .pointerInput(Unit) {
-                awaitEachGesture {
-                    val down = awaitFirstDown(requireUnconsumed = false)
-                    var longPressFired = false
-                    val longPressJob = launch {
-                        delay(ORB_LONG_PRESS_THRESHOLD_MS)
-                        longPressFired = true
-                        down.consume()
-                        onLongPress()
-                    }
-                    while (true) {
-                        val event = awaitPointerEvent()
-                        val change = event.changes.firstOrNull { it.id == down.id }
-                            ?: break
-                        if (change.changedToUp()) {
-                            longPressJob.cancel()
-                            if (!longPressFired) onClick()
-                            break
+                coroutineScope {
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        var longPressFired = false
+                        val longPressJob = launch {
+                            delay(ORB_LONG_PRESS_THRESHOLD_MS)
+                            longPressFired = true
+                            down.consume()
+                            onLongPress()
                         }
-                        if (!change.pressed) {
-                            longPressJob.cancel()
-                            break
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull { it.id == down.id }
+                                ?: break
+                            if (change.changedToUp()) {
+                                longPressJob.cancel()
+                                if (!longPressFired) onClick()
+                                break
+                            }
+                            if (!change.pressed) {
+                                longPressJob.cancel()
+                                break
+                            }
                         }
                     }
                 }
