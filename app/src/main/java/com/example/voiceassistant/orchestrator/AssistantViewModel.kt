@@ -414,8 +414,9 @@ class AssistantViewModel @Inject constructor(
             }
             "v${info.versionName} (code $code)"
         }.getOrDefault("v? (?)")
-        sb.appendLine("JARVIS diagnosis — $buildLabel")
-        sb.appendLine("-----------------")
+        sb.appendLine("==== JARVIS BUILD REPORT ====")
+        sb.appendLine("Build: $buildLabel")
+        sb.appendLine("=============================")
         sb.appendLine("Device: total RAM ${totalMb} MB, available ${availableMb} MB")
         sb.appendLine("Vosk model: ${modelPath ?: "(not installed)"}")
         if (modelSizeMb != null) sb.appendLine("Vosk model size: %.1f MB".format(modelSizeMb))
