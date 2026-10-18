@@ -145,6 +145,25 @@ private fun DiagnoseTab(
     val totalMemoryMb = remember(viewModel) { viewModel.memoryBudget.totalMemoryBytes / (1024 * 1024) }
     val availableMemoryMb = remember(viewModel) { viewModel.memoryBudget.availableMemoryBytes / (1024 * 1024) }
     val context = LocalContext.current
+    // Read the installed package's versionCode/versionName directly via
+    // PackageManager. Surfaced at the top of the Diagnose tab so the
+    // first thing the user sees is which build is actually running on
+    // the device — critical when the user pastes a diagnosis and we
+    // need to know whether the buffer fix from PR #22 (and later
+    // fixes) is on the phone or not.
+    val packageVersion = remember(context) {
+        runCatching {
+            @Suppress("DEPRECATION")
+            val info = context.packageManager.getPackageInfo(context.packageName, 0)
+            val code = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                info.longVersionCode
+            } else {
+                @Suppress("DEPRECATION")
+                info.versionCode.toLong()
+            }
+            "v${info.versionName} (code $code)"
+        }.getOrDefault("v? (?)")
+    }
     var lastSavePath by remember { mutableStateOf<String?>(null) }
     var saveError by remember { mutableStateOf<String?>(null) }
     var lastCopyState by remember { mutableStateOf<String?>(null) }
@@ -156,6 +175,16 @@ private fun DiagnoseTab(
     val latency = stats.averageReadLatencyMicros
 
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        // Build banner. Sits at the very top so it's the first thing
+        // visible. The user pastes diagnoses verbatim; the versionCode
+        // in the pasted text tells us without guessing whether the
+        // device is on v119 (no buffer fix) or v121+ (buffer fix).
+        Text(
+            text = "JARVIS build: $packageVersion",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.testTag("DiagnoseBuildBanner")
+        )
         AudioLevelBar(levelDb = levelDb)
         MicStatusPill(levelDb = levelDb, framesDelivered = frames, ticker = ticker)
         // Mic level history strip: a scrolling bar chart of the last

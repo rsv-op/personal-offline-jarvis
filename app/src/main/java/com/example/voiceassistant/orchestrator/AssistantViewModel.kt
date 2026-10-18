@@ -396,7 +396,25 @@ class AssistantViewModel @Inject constructor(
         val modelSizeMb = modelStore.installedModelSizeMb()
         val replyModelPath = localGenerationModelStore.installedModelPath()
         val stats = audioCaptureSource.stats
-        sb.appendLine("JARVIS diagnosis")
+        // Read the installed package's version so the pasted diagnosis
+        // unambiguously identifies the build on the device. The
+        // versionCode is set to the GitHub Actions run number, so a
+        // value >= 121 means the AudioRecord buffer fix from PR #22
+        // is present; < 121 means the v119-era buffer is still in use
+        // and the user's "Average read latency" of ~99 ms/frame is
+        // expected.
+        val buildLabel = runCatching {
+            @Suppress("DEPRECATION")
+            val info = context.packageManager.getPackageInfo(context.packageName, 0)
+            val code = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                info.longVersionCode
+            } else {
+                @Suppress("DEPRECATION")
+                info.versionCode.toLong()
+            }
+            "v${info.versionName} (code $code)"
+        }.getOrDefault("v? (?)")
+        sb.appendLine("JARVIS diagnosis — $buildLabel")
         sb.appendLine("-----------------")
         sb.appendLine("Device: total RAM ${totalMb} MB, available ${availableMb} MB")
         sb.appendLine("Vosk model: ${modelPath ?: "(not installed)"}")
