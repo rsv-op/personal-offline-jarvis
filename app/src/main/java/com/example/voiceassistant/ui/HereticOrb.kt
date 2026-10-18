@@ -9,7 +9,8 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -28,11 +29,23 @@ import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.input.pointer.changedToUp
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.example.voiceassistant.statemachine.AssistantUiState
+import kotlinx.coroutines.delay
 import kotlin.math.min
+
+/**
+ * 3 s deliberate hold opens the Diagnose tab. Compose's default
+ * long-press threshold is ~400 ms, which made the Diagnose tab
+ * open whenever the user held the orb for a slow tap. 3 s matches
+ * the user's mental model: a press is for listening, a sustained
+ * hold is for diagnostics.
+ */
+private const val ORB_LONG_PRESS_THRESHOLD_MS = 3_000L
 
 /**
  * The Heretic orb shown on the home screen.
@@ -114,10 +127,44 @@ fun HereticOrb(
         modifier = modifier
             .size(size)
             .clip(CircleShape)
-            .combinedClickable(
-                onClick = onClick,
-                onLongClick = onLongPress
-            )
+            // Custom press detection so the long-press threshold is
+            // explicit. Compose's [combinedClickable] uses the platform
+            // default long-press timeout (~400 ms), which is too short:
+            // a user who taps the orb to start listening would
+            // sometimes hold for half a second and accidentally open
+            // the Diagnose tab. We want a deliberate, sustained
+            // gesture to open Diagnose, so the threshold is 3 s.
+            //
+            // Behavior:
+            //   * press + release before 3 s   -> onClick()  (start/stop listening)
+            //   * press held >= 3 s            -> onLongPress() (open Diagnose)
+            //   * long-press fires once; the eventual release does nothing
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    var longPressFired = false
+                    val longPressJob = launch {
+                        delay(ORB_LONG_PRESS_THRESHOLD_MS)
+                        longPressFired = true
+                        down.consume()
+                        onLongPress()
+                    }
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull { it.id == down.id }
+                            ?: break
+                        if (change.changedToUp()) {
+                            longPressJob.cancel()
+                            if (!longPressFired) onClick()
+                            break
+                        }
+                        if (!change.pressed) {
+                            longPressJob.cancel()
+                            break
+                        }
+                    }
+                }
+            }
             .testTag("AssistantOrb"),
         contentAlignment = Alignment.Center
     ) {
