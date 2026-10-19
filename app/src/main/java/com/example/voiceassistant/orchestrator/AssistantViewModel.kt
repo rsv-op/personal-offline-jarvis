@@ -25,8 +25,8 @@ import com.example.voiceassistant.stt.AudioDiagnostics
 import com.example.voiceassistant.memory.DeviceMemory
 import com.example.voiceassistant.stt.OfflineSttIntegrator
 import com.example.voiceassistant.stt.SttEngine
+import com.example.voiceassistant.stt.SherpaOnnxModelStore
 import com.example.voiceassistant.stt.SttEvent
-import com.example.voiceassistant.stt.VoskModelStore
 import com.example.voiceassistant.vault.JarvisMemory
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -48,7 +48,7 @@ import javax.inject.Inject
  *
  * Voice loop:
  * ```
- *   tap orb -> load speech model -> listen -> transcribe (Vosk)
+ *   tap orb -> load speech model -> listen -> transcribe (sherpa-onnx)
  *     -> route intent (rules, then the ai-matrix brain)
  *     -> device action? ask "do you want me to ...?" and wait for yes/cancel
  *     -> execute -> speak the result -> log it to the encrypted vault -> idle
@@ -69,7 +69,7 @@ class AssistantViewModel @Inject constructor(
     private val nlpProcessor: NlpProcessor,
     sttEngine: SttEngine,
     private val audioCaptureSource: AudioCaptureSource,
-    private val modelStore: VoskModelStore,
+    private val modelStore: SherpaOnnxModelStore,
     private val localTextGenerator: LocalTextGenerator,
     private val localGenerationModelStore: LocalGenerationModelStore,
     private val brain: OnDeviceBrain,
@@ -162,10 +162,10 @@ class AssistantViewModel @Inject constructor(
     val diagnosticStats: AudioDiagnostics.CaptureStats
         get() = audioCaptureSource.stats
 
-    /** The current Vosk model path, or null if no model is installed. */
+    /** The current sherpa-onnx model path, or null if no model is installed. */
     val diagnosticModelPath: String? get() = modelStore.installedModelPath()
 
-    /** The size of the installed Vosk model in MB, or null if no model is installed. */
+    /** The size of the installed sherpa-onnx model in MB, or null if no model is installed. */
     val diagnosticModelSizeMb: Double? get() = modelStore.installedModelSizeMb()
 
     /** The current LiteRT-LM reply model path, or null if no model is installed. */
@@ -223,10 +223,10 @@ class AssistantViewModel @Inject constructor(
 
     // ---------------------------------------------------------- model import
 
-    /** Imports an extracted Vosk model folder. */
+    /** Imports an extracted sherpa-onnx model folder. */
     fun importOfflineModel(treeUri: Uri) = importSpeechModel { modelStore.importModelTree(treeUri) }
 
-    /** Imports a Vosk model downloaded as a `.zip` — the phone-friendly path. */
+    /** Imports a sherpa-onnx model downloaded as a `.zip` archive. */
     fun importOfflineModelArchive(archiveUri: Uri) =
         importSpeechModel { modelStore.importModelArchive(archiveUri) }
 
@@ -295,7 +295,7 @@ class AssistantViewModel @Inject constructor(
 
         val modelPath = modelStore.installedModelPath()
         if (modelPath == null) {
-            _statusMessage.value = "Import an offline Vosk model (folder or .zip) before listening."
+            _statusMessage.value = "Import an offline speech model (folder or .zip) before listening."
             _modelStatus.value = "Offline speech model not installed"
             return
         }
@@ -418,8 +418,8 @@ class AssistantViewModel @Inject constructor(
         sb.appendLine("Build: $buildLabel")
         sb.appendLine("=============================")
         sb.appendLine("Device: total RAM ${totalMb} MB, available ${availableMb} MB")
-        sb.appendLine("Vosk model: ${modelPath ?: "(not installed)"}")
-        if (modelSizeMb != null) sb.appendLine("Vosk model size: %.1f MB".format(modelSizeMb))
+        sb.appendLine("Speech model: ${modelPath ?: "(not installed)"}")
+        if (modelSizeMb != null) sb.appendLine("Speech model size: %.1f MB".format(modelSizeMb))
         sb.appendLine("Reply model: ${replyModelPath ?: "(not installed)"}")
         replyModelPath?.let {
             val f = java.io.File(it)

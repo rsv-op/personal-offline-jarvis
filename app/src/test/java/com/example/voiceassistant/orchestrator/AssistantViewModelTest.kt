@@ -18,8 +18,8 @@ import com.example.voiceassistant.nlp.AppIntent
 import com.example.voiceassistant.nlp.NlpProcessor
 import com.example.voiceassistant.statemachine.AssistantUiState
 import com.example.voiceassistant.stt.AudioCaptureSource
+import com.example.voiceassistant.stt.SherpaOnnxModelStore
 import com.example.voiceassistant.stt.SttEngine
-import com.example.voiceassistant.stt.VoskModelStore
 import com.example.voiceassistant.vault.JarvisMemory
 import com.example.voiceassistant.vault.SecureVault
 import com.example.voiceassistant.vault.SoftwareVaultCipher
@@ -54,7 +54,7 @@ import java.io.File
 
 /**
  * View-model level behaviour: the confirmation gate, the follow-up questions and the
- * spoken yes/no loop — all without a microphone or a real Vosk model.
+ * spoken yes/no loop — all without a microphone or a real sherpa-onnx model.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class AssistantViewModelTest {
@@ -70,7 +70,7 @@ class AssistantViewModelTest {
     private lateinit var mockStatusExecutor: StatusExecutor
     private lateinit var mockAudioCaptureSource: AudioCaptureSource
     private lateinit var mockSttEngine: SttEngine
-    private lateinit var mockModelStore: VoskModelStore
+    private lateinit var mockModelStore: SherpaOnnxModelStore
     private lateinit var mockLocalTextGenerator: LocalTextGenerator
     private lateinit var mockLocalGenerationModelStore: LocalGenerationModelStore
     private lateinit var mockMemoryBudget: com.example.voiceassistant.memory.DeviceMemory
@@ -333,7 +333,7 @@ class AssistantViewModelTest {
         advanceUntilIdle()
 
         assertEquals(AssistantUiState.Idle, viewModel.uiState.value)
-        assertTrue(viewModel.statusMessage.value.contains("Import an offline Vosk model"))
+        assertTrue(viewModel.statusMessage.value.contains("Import an offline speech model"))
     }
 
     @Test

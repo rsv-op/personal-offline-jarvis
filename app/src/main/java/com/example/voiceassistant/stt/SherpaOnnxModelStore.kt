@@ -14,38 +14,51 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Copies a user-selected Vosk model into private app storage for fully offline use.
+ * Copies a user-selected sherpa-onnx Streaming Zipformer model into
+ * private app storage for fully offline use.
  *
- * Two import paths, because models are large and phones are awkward:
+ * Replaces [VoskModelStore] (PR #27). The model layout on disk is
+ * different — sherpa-onnx uses flat `.onnx` files plus a `tokens.txt`
+ * rather than Vosk's `conf/model.conf` + `am/final.mdl` + `graph/HCLG.fst`
+ * structure — so the import paths and the validator are different too.
  *
- *  * [importModelArchive] — a `.zip` straight from the Vosk download page. This is the
- *    recommended path: Android's Files app cannot unzip, so the app does it (safely,
- *    with zip-slip protection and a size budget).
- *  * [importModelTree] — an already extracted folder, via the folder picker.
+ * Two import paths:
  *
- * Both validate that the result really is a *usable* Vosk model — a non-empty
- * `conf/model.conf` plus a real payload, never just the presence of a file name that an
- * empty extraction also produces — and install it atomically, keeping the previous model
- * until the new one is complete.
+ *  * [importModelArchive] — a `.zip` straight from a sherpa-onnx model
+ *    download. The official sherpa-onnx model distribution is
+ *    `.tar.bz2`, which is harder to extract on Android without a
+ *    third-party library. We accept `.zip` for users who re-pack the
+ *    archive; most users will use the folder path instead.
+ *  * [importModelTree] — an already extracted folder, via the folder
+ *    picker. **This is the recommended path**: the user downloads
+ *    `sherpa-onnx-streaming-zipformer-en-20M-2023-02-17.tar.bz2` in a
+ *    browser, extracts it on a computer, transfers the folder to the
+ *    phone, and picks it.
+ *
+ * Both validate that the result really is a *usable* sherpa-onnx model
+ * — non-empty `tokens.txt` plus all three of `encoder-*.onnx`,
+ * `decoder-*.onnx`, `joiner-*.onnx`, plus the size floor — and install
+ * it atomically, keeping the previous model until the new one is
+ * complete.
  */
 @Singleton
-class VoskModelStore @Inject constructor(
+class SherpaOnnxModelStore @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
     private val modelsDirectory = File(context.filesDir, "models")
-    private val installedDirectory = File(modelsDirectory, "vosk-model")
-    private val stagingDirectory = File(modelsDirectory, "vosk-import-staging")
+    private val installedDirectory = File(modelsDirectory, "sherpa-model")
+    private val stagingDirectory = File(modelsDirectory, "sherpa-import-staging")
 
     fun installedModelPath(): String? =
-        installedDirectory.takeIf(ModelArchiveExtractor::isModelDirectory)?.absolutePath
+        installedDirectory.takeIf(SherpaOnnxModelValidator::isModelDirectory)?.absolutePath
 
     /** Human-readable size of the installed model, or `null` when none is installed. */
     fun installedModelSizeMb(): Double? =
-        installedDirectory.takeIf(ModelArchiveExtractor::isModelDirectory)
-            ?.let(ModelArchiveExtractor::modelSizeBytes)
+        installedDirectory.takeIf(SherpaOnnxModelValidator::isModelDirectory)
+            ?.let(SherpaOnnxModelValidator::modelSizeBytes)
             ?.let { bytes -> bytes / (1024.0 * 1024.0) }
 
-    /** Imports a `.zip` (or `.tar`-less archive) downloaded from the Vosk model catalog. */
+    /** Imports a `.zip` archive containing the sherpa-onnx model files. */
     suspend fun importModelArchive(uri: Uri): String = withContext(Dispatchers.IO) {
         requireArchiveName(uri)
         prepareStaging()
@@ -58,26 +71,32 @@ class VoskModelStore @Inject constructor(
                     ModelArchiveExtractor.extract(zip, stagingDirectory, budget)
                 }
             }
-            val modelRoot = ModelArchiveExtractor.findModelRoot(stagingDirectory)
-                ?: throw IllegalArgumentException(ModelArchiveExtractor.describeRejection(stagingDirectory))
+            val modelRoot = findModelRoot(stagingDirectory)
+                ?: throw IllegalArgumentException(SherpaOnnxModelValidator.describeRejection(stagingDirectory))
             install(modelRoot)
         } finally {
             stagingDirectory.deleteRecursively()
         }
     }
 
-    /** Imports an extracted model folder (or a parent folder containing one). */
+    /**
+     * Imports an extracted model folder (or a parent folder containing one).
+     * This is the recommended path: the user downloads the
+     * `sherpa-onnx-streaming-zipformer-en-20M-2023-02-17.tar.bz2` archive
+     * on a computer, extracts it, and selects the resulting folder on
+     * the phone.
+     */
     suspend fun importModelTree(treeUri: Uri): String = withContext(Dispatchers.IO) {
         val source = DocumentFile.fromTreeUri(context, treeUri)
             ?: throw IllegalArgumentException("Unable to open the selected model folder")
-        require(source.isDirectory) { "Select the extracted Vosk model folder" }
+        require(source.isDirectory) { "Select the extracted sherpa-onnx model folder" }
 
         prepareStaging()
         try {
             val budget = ModelArchiveExtractor.Budget()
             copyChildren(source, stagingDirectory, budget)
-            val modelRoot = ModelArchiveExtractor.findModelRoot(stagingDirectory)
-                ?: throw IllegalArgumentException(ModelArchiveExtractor.describeRejection(stagingDirectory))
+            val modelRoot = findModelRoot(stagingDirectory)
+                ?: throw IllegalArgumentException(SherpaOnnxModelValidator.describeRejection(stagingDirectory))
             install(modelRoot)
         } finally {
             stagingDirectory.deleteRecursively()
@@ -87,15 +106,14 @@ class VoskModelStore @Inject constructor(
     // ------------------------------------------------------------------ install
 
     private fun install(modelRoot: File): String {
-        val replacement = File(modelsDirectory, "vosk-model-new")
+        val replacement = File(modelsDirectory, "sherpa-model-new")
         replacement.deleteRecursively()
         modelRoot.copyRecursively(replacement, overwrite = true)
-        check(ModelArchiveExtractor.isModelDirectory(replacement)) {
-            "The selected model is incomplete: conf/model.conf is missing or empty, or the " +
-                "model contains no data."
+        check(SherpaOnnxModelValidator.isModelDirectory(replacement)) {
+            "The selected model is incomplete: tokens.txt or one of the .onnx files is missing or empty."
         }
 
-        val backup = File(modelsDirectory, "vosk-model-old")
+        val backup = File(modelsDirectory, "sherpa-model-old")
         backup.deleteRecursively()
         if (installedDirectory.exists()) {
             check(installedDirectory.renameTo(backup)) { "Could not replace the current model" }
@@ -116,6 +134,13 @@ class VoskModelStore @Inject constructor(
         check(stagingDirectory.mkdirs()) { "Could not create the model import staging folder" }
     }
 
+    private fun findModelRoot(start: File): File? {
+        if (SherpaOnnxModelValidator.isModelDirectory(start)) return start
+        return start.walkTopDown()
+            .maxDepth(ModelArchiveExtractor.MAX_SEARCH_DEPTH)
+            .firstOrNull(SherpaOnnxModelValidator::isModelDirectory)
+    }
+
     private fun requireArchiveName(uri: Uri) {
         val displayName = context.contentResolver.query(
             uri,
@@ -124,12 +149,18 @@ class VoskModelStore @Inject constructor(
             null,
             null
         )?.use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
-        // Some pickers report no name at all; Vosk archives end in .zip, but we accept
-        // anything the user pointed at and validate the contents instead.
+        // Some pickers report no name at all; we accept anything the
+        // user pointed at and validate the contents instead, but if
+        // there is a name, it should look like an archive.
         if (displayName != null) {
             val lower = displayName.lowercase()
-            require(lower.endsWith(".zip")) {
-                "Choose the .zip file you downloaded from the Vosk model catalog"
+            require(
+                lower.endsWith(".zip") ||
+                    lower.endsWith(".tar.bz2") ||
+                    lower.endsWith(".tbz2") ||
+                    lower.endsWith(".tgz")
+            ) {
+                "Choose the .zip or .tar.bz2 archive you downloaded from the sherpa-onnx model catalog"
             }
         }
     }
@@ -173,5 +204,4 @@ class VoskModelStore @Inject constructor(
             }
         }
     }
-
 }

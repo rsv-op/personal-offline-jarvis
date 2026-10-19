@@ -1,7 +1,7 @@
 package com.example.voiceassistant.execution
 
 import com.example.voiceassistant.aimatrix.IntentModelSource
-import com.example.voiceassistant.stt.VoskModelStore
+import com.example.voiceassistant.stt.SherpaOnnxModelStore
 import com.example.voiceassistant.vault.JarvisMemory
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -14,19 +14,19 @@ import javax.inject.Singleton
 @Singleton
 class AssistantStatusProvider @Inject constructor(
     private val modelStore: IntentModelSource,
-    private val voskModelStore: VoskModelStore,
+    private val sherpaOnnxModelStore: SherpaOnnxModelStore,
     private val memory: JarvisMemory
 ) {
     suspend fun describe(): String {
         val parts = ArrayList<String>(4)
 
-        val speech = voskModelStore.installedModelPath()
+        val speech = sherpaOnnxModelStore.installedModelPath()
         parts += if (speech == null) {
             "No offline speech model is installed, so I cannot hear you yet."
         } else {
-            val size = voskModelStore.installedModelSizeMb()
+            val size = sherpaOnnxModelStore.installedModelSizeMb()
             val sizeText = if (size == null) "" else String.format(java.util.Locale.US, " (%.0f megabytes)", size)
-            "Offline speech recognition is running on the imported Vosk model$sizeText."
+            "Offline speech recognition is running on the imported sherpa-onnx model$sizeText."
         }
 
         val classifier = modelStore.classifier()
@@ -58,7 +58,7 @@ class AssistantStatusProvider @Inject constructor(
     suspend fun shortStatus(): String {
         val classifier = modelStore.classifier()
         val brainText = if (classifier == null) "intent brain unavailable" else "intent brain ready"
-        val speechText = if (voskModelStore.installedModelPath() == null) {
+        val speechText = if (sherpaOnnxModelStore.installedModelPath() == null) {
             "speech model missing"
         } else {
             "speech model ready"
