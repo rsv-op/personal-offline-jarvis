@@ -148,6 +148,52 @@ jobs:
               emit(f"Test failures {cls[:80]}", lines)
           PY
 
+      - name: Post the sherpa-onnx AAR listing to the PR
+        # The CI log archive is hosted on storage that the agent
+        # sandbox cannot read back. To debug the
+        # `extractSherpaJniLibs` task we need to see the actual
+        # on-disk layout inside the AAR. `downloadSherpaAar`
+        # writes that listing to app/build/sherpa-jni/
+        # aar-listing.txt (in addition to printing it). This
+        # step posts the listing as a PR comment so the agent
+        # can read it via the GitHub API.
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          LISTING="app/build/sherpa-jni/aar-listing.txt"
+          if [ ! -s "$LISTING" ]; then
+            echo "no AAR listing at $LISTING; downloadSherpaAar did not run or did not write the file"
+            exit 0
+          fi
+          # A PR comment is capped at 65 535 chars. The AAR
+          # listing is well under that, but truncate defensively.
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import subprocess
+
+          pr_number = os.environ.get("PR_NUMBER", "")
+          if not pr_number:
+              print("PR_NUMBER is empty (not a pull_request run); skipping PR comment.")
+              import sys
+              sys.exit(0)
+
+          listing = pathlib.Path("app/build/sherpa-jni/aar-listing.txt").read_text(errors="replace")
+          truncated = listing if len(listing) <= 60_000 else listing[:60_000] + "\n...[truncated]"
+
+          body = (
+              "## sherpa-onnx AAR listing (from `downloadSherpaAar`)\n\n"
+              "```\n" + truncated + "\n```\n"
+          )
+          subprocess.run(
+              ["gh", "pr", "comment", pr_number, "--body", body],
+              check=True,
+          )
+          PY
+
       - name: Verify the built APK
         # Proves the shipped artifact really is the offline assistant: right package, right
         # SDK levels, phone ABIs, no INTERNET permission, model asset present. The findings

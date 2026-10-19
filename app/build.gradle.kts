@@ -94,21 +94,28 @@ kotlin {
 // prebuilt jniLibs into the build dir.
 val downloadSherpaAar: TaskProvider<Exec> = tasks.register<Exec>("downloadSherpaAar") {
     group = "build"
-    description = "Download the sherpa-onnx 1.13.8 AAR from jitpack to a build-dir cache."
+    description = "Download the sherpa-onnx 1.13.8 AAR from jitpack to a build-dir cache, and write a listing."
     val aarFile = layout.buildDirectory.file("sherpa-jni/sherpa-onnx-1.13.8.aar")
     outputs.file(aarFile)
+    val listingFile = layout.buildDirectory.file("sherpa-jni/aar-listing.txt")
+    outputs.file(listingFile)
     val aarPath = aarFile.get().asFile.absolutePath
     val aarDir = aarFile.get().asFile.parentFile.absolutePath
+    val listingPath = listingFile.get().asFile.absolutePath
     // curl is universally available on the ubuntu-latest GitHub
     // runner. We download with `-f` so a 4xx/5xx becomes a non-
     // zero exit and the build fails loudly instead of producing
-    // an empty .aar.
+    // an empty .aar. The full `unzip -l` listing is written to
+    // `aar-listing.txt` so the `Post the sherpa-onnx AAR
+    // listing to the PR` workflow step can post it as a PR
+    // comment (the CI log itself lives behind a signed Azure
+    // blob URL the agent sandbox cannot read back).
     commandLine = listOf(
         "sh", "-c",
         "mkdir -p '$aarDir' && " +
             "curl -fSL --retry 3 -o '$aarPath' " +
             "https://jitpack.io/com/github/k2-fsa/sherpa-onnx/sherpa-onnx/1.13.8/sherpa-onnx-1.13.8.aar " +
-            "&& unzip -l '$aarPath'"
+            "&& unzip -l '$aarPath' | tee '$listingPath'"
     )
 }
 
