@@ -1,3 +1,4 @@
+import org.gradle.api.GradleException
 import org.gradle.api.tasks.Copy
 import org.gradle.api.tasks.TaskProvider
 
@@ -86,58 +87,61 @@ kotlin {
 // dependency graph. Only its jniLibs make it into the APK, via
 // `<outDir>/jni` becoming a jniLibs srcDir below.
 //
-// Splitting into two tasks: `downloadSherpaAar` is a plain `Exec`
-// that fetches the AAR and ALWAYS prints its `unzip -l` listing
-// (so the next CI log makes the on-disk layout unambiguous even
-// if the downstream extraction is a no-op). `extractSherpaJniLibs`
-// is a `Copy` that depends on the download and unzips the
-// prebuilt jniLibs into the build dir.
-val downloadSherpaAar: TaskProvider<Exec> = tasks.register<Exec>("downloadSherpaAar") {
+// The download is done inline in `extractSherpaJniLibs.doFirst`
+// rather than as a separate `downloadSherpaAar` task with
+// `dependsOn`, because the earlier split-task design lost
+// output declarations across two `outputs.file(...)` calls
+// (the second call replaced the first) and the AAR file
+// silently never got fetched, which manifested downstream
+// as `Cannot expand ZIP ... as it does not exist`. Doing the
+// download inline guarantees it runs before the unzip and
+// removes the cross-task output declaration from the
+// equation. The full `unzip -l` listing is still written to
+// `aar-listing.txt` so the `Post the sherpa-onnx AAR listing
+// to the PR` workflow step can post it.
+val extractSherpaJniLibs: TaskProvider<Copy> = tasks.register<Copy>("extractSherpaJniLibs") {
     group = "build"
-    description = "Download the sherpa-onnx 1.13.8 AAR from jitpack to a build-dir cache, and write a listing."
+    description = "Download the sherpa-onnx 1.13.8 AAR from jitpack and unzip the jniLibs into the build dir."
     val aarFile = layout.buildDirectory.file("sherpa-jni/sherpa-onnx-1.13.8.aar")
     val listingFile = layout.buildDirectory.file("sherpa-jni/aar-listing.txt")
-    // Register both output files at once. Two separate
-    // `outputs.file(...)` calls on a `TaskOutputs` builder
-    // REPLACE each other in some Gradle versions, so use the
-    // multi-arg form to declare both. Always re-run
-    // (`outputs.upToDateWhen { false }`) — the AAR is small
-    // (~50 MB) and we'd rather re-fetch than serve a stale
-    // copy from a partial download.
-    outputs.files(aarFile, listingFile)
+    val outDir = layout.buildDirectory.dir("sherpa-jni")
+    outputs.dir(outDir)
+    // Disable up-to-date checking entirely. The output dir
+    // is a build/ subdirectory that Gradle wipes between
+    // builds anyway, and a stale-cache failure here would
+    // just re-derive to "the AAR isn't there" again.
     outputs.upToDateWhen { false }
     val aarPath = aarFile.get().asFile.absolutePath
     val aarDir = aarFile.get().asFile.parentFile.absolutePath
     val listingPath = listingFile.get().asFile.absolutePath
-    // curl is universally available on the ubuntu-latest GitHub
-    // runner. We download with `-f` so a 4xx/5xx becomes a non-
-    // zero exit and the build fails loudly instead of producing
-    // an empty .aar. The full `unzip -l` listing is written to
-    // `aar-listing.txt` so the `Post the sherpa-onnx AAR
-    // listing to the PR` workflow step can post it as a PR
-    // comment (the CI log itself lives behind a signed Azure
-    // blob URL the agent sandbox cannot read back).
-    commandLine = listOf(
-        "sh", "-c",
-        "mkdir -p '$aarDir' && " +
-            "curl -fSL --retry 3 -o '$aarPath' " +
-            "https://jitpack.io/com/github/k2-fsa/sherpa-onnx/sherpa-onnx/1.13.8/sherpa-onnx-1.13.8.aar " +
-            "&& unzip -l '$aarPath' | tee '$listingPath'"
-    )
-}
-
-val extractSherpaJniLibs: TaskProvider<Copy> = tasks.register<Copy>("extractSherpaJniLibs") {
-    group = "build"
-    description = "Unzip the sherpa-onnx AAR and copy its {jniLibs,jni,lib}/{arm64-v8a,armeabi-v7a}/*.so into the build dir."
-    dependsOn(downloadSherpaAar)
-    val outDir = layout.buildDirectory.dir("sherpa-jni")
-    outputs.dir(outDir)
+    val aarUrl = "https://jitpack.io/com/github/k2-fsa/sherpa-onnx/sherpa-onnx/1.13.8/sherpa-onnx-1.13.8.aar"
     doFirst {
-        // Clear the destination so stale .so files from a previous
-        // AAR version don't linger.
+        // Clear the destination so stale .so files from a
+        // previous AAR version don't linger.
         project.delete(outDir)
+        // Download the AAR over HTTP and write the listing
+        // next to it. curl is universally available on
+        // ubuntu-latest. -f makes HTTP errors fail loudly
+        // instead of producing an empty .aar.
+        val dl = listOf(
+            "sh", "-c",
+            "mkdir -p '$aarDir' && " +
+                "curl -fSL --retry 3 -o '$aarPath' '$aarUrl' && " +
+                "unzip -l '$aarPath' | tee '$listingPath'"
+        )
+        val proc = ProcessBuilder(dl).redirectErrorStream(true).start()
+        val output = proc.inputStream.bufferedReader().readText()
+        val rc = proc.waitFor()
+        if (rc != 0) {
+            throw GradleException(
+                "downloadSherpaAar: failed (rc=$rc). Output:\n$output"
+            )
+        }
+        // Mark the listing in the build log so the next CI run
+        // makes the on-disk layout unambiguous even if the
+        // PR-comment step is skipped.
+        logger.lifecycle("extractSherpaJniLibs: AAR listing:\n$output")
     }
-    val aarFile = layout.buildDirectory.file("sherpa-jni/sherpa-onnx-1.13.8.aar").get().asFile
     from(zipTree(aarFile))
     into(outDir)
     // The k2-fsa/sherpa-onnx AAR is built with the layout
