@@ -152,20 +152,26 @@ jobs:
         # The CI log archive is hosted on storage that the agent
         # sandbox cannot read back. To debug the
         # `extractSherpaJniLibs` task we need to see the actual
-        # on-disk layout inside the AAR. `downloadSherpaAar`
-        # writes that listing to app/build/sherpa-jni/
+        # on-disk layout inside the AAR. `extractSherpaJniLibs`
+        # writes the listing to app/build/sherpa-jni/
         # aar-listing.txt (in addition to printing it). This
         # step posts the listing as a PR comment so the agent
-        # can read it via the GitHub API.
+        # can read it via the GitHub API. Marked
+        # `continue-on-error` because it's a debug aid, not a
+        # build requirement: a PR-comment failure should never
+        # mask a green build.
         if: always()
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
           LISTING="app/build/sherpa-jni/aar-listing.txt"
+          echo "checking for AAR listing at $LISTING"
+          ls -la "$LISTING" 2>&1 || true
           if [ ! -s "$LISTING" ]; then
-            echo "no AAR listing at $LISTING; downloadSherpaAar did not run or did not write the file"
+            echo "no AAR listing at $LISTING; extractSherpaJniLibs did not run or did not write the file"
             exit 0
           fi
           # A PR comment is capped at 65 535 chars. The AAR
@@ -185,13 +191,15 @@ jobs:
           truncated = listing if len(listing) <= 60_000 else listing[:60_000] + "\n...[truncated]"
 
           body = (
-              "## sherpa-onnx AAR listing (from `downloadSherpaAar`)\n\n"
+              "## sherpa-onnx AAR listing (from `extractSherpaJniLibs`)\n\n"
               "```\n" + truncated + "\n```\n"
           )
-          subprocess.run(
+          result = subprocess.run(
               ["gh", "pr", "comment", pr_number, "--body", body],
-              check=True,
+              check=False,
           )
+          if result.returncode != 0:
+              print(f"gh pr comment failed (rc={result.returncode}); the listing is still in the build log")
           PY
 
       - name: Verify the built APK
