@@ -49,7 +49,7 @@ import kotlin.math.roundToInt
  * The in-app diagnose panel. Reached by long-pressing the orb while idle. The point is
  * to give the user (and me) a direct read on what the app is hearing, so a bad STT
  * transcript is not a guessing game: the screen tells you whether the mic is hot,
- * whether audio frames are being dropped, what sample rate Vosk is configured for,
+ * whether audio frames are being dropped, what sample rate sherpa-onnx is configured for,
  * and offers to save the last 10 s of audio for offline playback.
  *
  * The panel is read-only on the assistant: opening it does not start the recogniser,
@@ -219,7 +219,7 @@ private fun DiagnoseTab(
         SectionCard(title = "Model") {
             if (modelPath == null) {
                 Text(
-                    text = "No Vosk model installed. The app cannot transcribe until one is imported.",
+                    text = "No speech model installed. The app cannot transcribe until one is imported.",
                     color = MaterialTheme.colorScheme.error
                 )
             } else {
@@ -270,16 +270,16 @@ private fun DiagnoseTab(
             StatRow("Total RAM", "$totalMemoryMb MB")
             StatRow("Available RAM", "$availableMemoryMb MB")
             if (modelSizeMb != null) {
-                val voskHeadroomMb = (modelSizeMb * 1.5).toInt()
-                val safe = availableMemoryMb >= voskHeadroomMb
+                val headroomMb = (modelSizeMb * 1.5).toInt()
+                val safe = availableMemoryMb >= headroomMb
                 StatRow(
-                    "Vosk model headroom (1.5×)",
-                    "$voskHeadroomMb MB needed",
+                    "Speech model headroom (1.5×)",
+                    "$headroomMb MB needed",
                     ok = safe
                 )
                 if (!safe) {
                     Text(
-                        text = "This device may not have enough free RAM to load the installed Vosk model. " +
+                        text = "This device may not have enough free RAM to load the installed speech model. " +
                             "Close other apps and retry, or install a smaller model.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error
