@@ -43,12 +43,6 @@ android {
         }
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
-            // The sherpa-onnx AAR and the sherpa-onnx-jvm jar both
-            // ship a small set of `com.k2fsa.sherpa.onnx.*` classes
-            // (AudioEvent, OnlineRecognizer, OnlineStream, etc.). The
-            // AAR's classes.jar is a subset of the JVM jar, so on
-            // duplicate the JVM-jar copy is the one we want in dex.
-            pickFirsts += "com/k2fsa/sherpa/onnx/**"
         }
     }
 
@@ -97,8 +91,13 @@ dependencies {
     //
     // Both artifacts ship a few overlapping `com.k2fsa.sherpa.onnx.*`
     // classes (AudioEvent is the one Gradle complains about);
-    // `packaging { resources { pickFirsts } }` above resolves that
-    // collision by letting Gradle pick the JVM-jar copy.
+    // the JVM jar is the authoritative source (the AAR's classes.jar
+    // is a subset, and is missing the `Builder` inner classes the
+    // new fluent API uses), so the AAR's runtime module — which is
+    // just a repackaged `sherpa-onnx-1.13.8-runtime` jar containing
+    // the AAR's classes.jar — is excluded from the JVM jar's
+    // transitive resolution, and we list the AAR separately so the
+    // AndroidManifest.xml and jniLibs still get picked up.
     implementation("com.github.k2-fsa.sherpa-onnx:sherpa-onnx:1.13.8@aar")
     implementation("com.github.k2-fsa.sherpa-onnx:sherpa-onnx-jvm:1.13.8")
     implementation("com.google.ai.edge.litertlm:litertlm-android:0.18.0")
@@ -130,4 +129,18 @@ dependencies {
     // Real org.json implementation for plain JVM unit tests (the Android one is a stub).
     testImplementation("org.json:json:20240303")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
+}
+
+// The sherpa-onnx AAR's classes.jar is registered as a transitive
+// module named `sherpa-onnx-1.13.8-runtime` by jitpack's repackaging.
+// Both it and the JVM jar ship a small set of `com.k2fsa.sherpa.onnx.*`
+// classes (AudioEvent is the one Gradle's checkDebugDuplicateClasses
+// complains about). The AAR's classes.jar is a subset of the JVM jar
+// and is missing the `Builder` inner classes the new fluent API uses,
+// so the JVM jar is the authoritative source. Excluding the AAR's
+// runtime module drops the AAR's contribution to the dex classpath
+// (so AudioEvent, etc., come from the JVM jar only) without affecting
+// the AAR's AndroidManifest, jniLibs, or packaging metadata.
+configurations.all {
+    exclude(group = "com.github.k2-fsa.sherpa-onnx", module = "sherpa-onnx-1.13.8-runtime")
 }
