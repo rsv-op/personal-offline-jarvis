@@ -73,15 +73,33 @@ dependencies {
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.documentfile:documentfile:1.0.1")
     // sherpa-onnx 1.13.8 Streaming Zipformer (English, INT8). Replaces
-    // the Vosk AAR (PR #27). The AAR is published on jitpack.io with
-    // the groupId `com.github.k2-fsa.sherpa-onnx` (the standard
-    // jitpack convention: `<group>:<artifact>` where the group is
-    // literally `com.github.<github-user-or-org>`). The .aar bundles
-    // the Android-specific libsherpa-onnx-jni.so for arm64-v8a and
-    // armeabi-v7a, matching the abiFilters above. The JVM-side jar
-    // and platform-specific native jars are transitive dependencies;
-    // on Android, the .so files in the AAR take precedence.
+    // the Vosk AAR (PR #27).
+    //
+    // The Android AAR is published on jitpack.io at
+    // `com.github.k2-fsa.sherpa-onnx:sherpa-onnx:1.13.8@aar`. It bundles
+    // the Android-specific `libsherpa-onnx-jni.so` for arm64-v8a and
+    // armeabi-v7a, matching the abiFilters above. The AAR's POM does
+    // NOT declare transitive dependencies, so the Java classes
+    // (OnlineRecognizer, OnlineModelConfig, FeatureConfig, etc.) are
+    // NOT inside the AAR — they live in a separate `sherpa-onnx-jvm`
+    // jar at the same jitpack coordinates. We depend on both so the
+    // Kotlin code sees the Java classes from the JVM jar at compile
+    // time, and the native libraries from the AAR load on the device
+    // at runtime. Without the JVM jar the compile fails with
+    // `Unresolved reference 'OnlineModelConfig'` (and the same for
+    // every other sherpa-onnx class).
+    //
+    // Both artifacts ship a few overlapping `com.k2fsa.sherpa.onnx.*`
+    // classes (AudioEvent is the one Gradle complains about);
+    // the JVM jar is the authoritative source (the AAR's classes.jar
+    // is a subset, and is missing the `Builder` inner classes the
+    // new fluent API uses), so the AAR's runtime module — which is
+    // just a repackaged `sherpa-onnx-1.13.8-runtime` jar containing
+    // the AAR's classes.jar — is excluded from the JVM jar's
+    // transitive resolution, and we list the AAR separately so the
+    // AndroidManifest.xml and jniLibs still get picked up.
     implementation("com.github.k2-fsa.sherpa-onnx:sherpa-onnx:1.13.8@aar")
+    implementation("com.github.k2-fsa.sherpa-onnx:sherpa-onnx-jvm:1.13.8")
     implementation("com.google.ai.edge.litertlm:litertlm-android:0.18.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.6.2")
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.6.2")
@@ -111,4 +129,18 @@ dependencies {
     // Real org.json implementation for plain JVM unit tests (the Android one is a stub).
     testImplementation("org.json:json:20240303")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
+}
+
+// The sherpa-onnx AAR's classes.jar is registered as a transitive
+// module named `sherpa-onnx-1.13.8-runtime` by jitpack's repackaging.
+// Both it and the JVM jar ship a small set of `com.k2fsa.sherpa.onnx.*`
+// classes (AudioEvent is the one Gradle's checkDebugDuplicateClasses
+// complains about). The AAR's classes.jar is a subset of the JVM jar
+// and is missing the `Builder` inner classes the new fluent API uses,
+// so the JVM jar is the authoritative source. Excluding the AAR's
+// runtime module drops the AAR's contribution to the dex classpath
+// (so AudioEvent, etc., come from the JVM jar only) without affecting
+// the AAR's AndroidManifest, jniLibs, or packaging metadata.
+configurations.all {
+    exclude(group = "com.github.k2-fsa.sherpa-onnx", module = "sherpa-onnx-1.13.8-runtime")
 }
