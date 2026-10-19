@@ -82,23 +82,19 @@ dependencies {
     // NOT declare transitive dependencies, so the Java classes
     // (OnlineRecognizer, OnlineModelConfig, FeatureConfig, etc.) are
     // NOT inside the AAR — they live in a separate `sherpa-onnx-jvm`
-    // jar at the same jitpack coordinates. We depend on both so the
-    // Kotlin code sees the Java classes from the JVM jar at compile
-    // time, and the native libraries from the AAR load on the device
-    // at runtime. Without the JVM jar the compile fails with
-    // `Unresolved reference 'OnlineModelConfig'` (and the same for
-    // every other sherpa-onnx class).
+    // jar at the same jitpack coordinates.
     //
-    // Both artifacts ship a few overlapping `com.k2fsa.sherpa.onnx.*`
-    // classes (AudioEvent is the one Gradle complains about);
-    // the JVM jar is the authoritative source (the AAR's classes.jar
-    // is a subset, and is missing the `Builder` inner classes the
-    // new fluent API uses), so the AAR's runtime module — which is
-    // just a repackaged `sherpa-onnx-1.13.8-runtime` jar containing
-    // the AAR's classes.jar — is excluded from the JVM jar's
-    // transitive resolution, and we list the AAR separately so the
-    // AndroidManifest.xml and jniLibs still get picked up.
-    implementation("com.github.k2-fsa.sherpa-onnx:sherpa-onnx:1.13.8@aar")
+    // We list the AAR as `runtimeOnly` so its classes.jar (a subset
+    // of the JVM jar, also missing the `Builder` inner classes the
+    // new fluent API uses) is NOT in the compile classpath. The JVM
+    // jar is the only thing the Kotlin compiler sees, and `runtimeOnly`
+    // still flows the AAR's jniLibs (`libsherpa-onnx-jni.so`,
+    // `libonnxruntime.so`) and packaging metadata into the APK.
+    // At runtime both jars end up in the APK and dex silently accepts
+    // the byte-identical duplicates, but the compile-classpath
+    // `checkDebugDuplicateClasses` (the only check that actually
+    // fails) now sees only the JVM jar.
+    runtimeOnly("com.github.k2-fsa.sherpa-onnx:sherpa-onnx:1.13.8@aar")
     implementation("com.github.k2-fsa.sherpa-onnx:sherpa-onnx-jvm:1.13.8")
     implementation("com.google.ai.edge.litertlm:litertlm-android:0.18.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.6.2")
@@ -131,16 +127,12 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
 
-// The sherpa-onnx AAR's classes.jar is registered as a transitive
-// module named `sherpa-onnx-1.13.8-runtime` by jitpack's repackaging.
-// Both it and the JVM jar ship a small set of `com.k2fsa.sherpa.onnx.*`
-// classes (AudioEvent is the one Gradle's checkDebugDuplicateClasses
-// complains about). The AAR's classes.jar is a subset of the JVM jar
-// and is missing the `Builder` inner classes the new fluent API uses,
-// so the JVM jar is the authoritative source. Excluding the AAR's
-// runtime module drops the AAR's contribution to the dex classpath
-// (so AudioEvent, etc., come from the JVM jar only) without affecting
-// the AAR's AndroidManifest, jniLibs, or packaging metadata.
-configurations.all {
-    exclude(group = "com.github.k2-fsa.sherpa-onnx", module = "sherpa-onnx-1.13.8-runtime")
-}
+// Earlier attempt: a `configurations.all { exclude(group, module) }`
+// targeting `sherpa-onnx-1.13.8-runtime` did not work — the AAR's
+// classes.jar is not a separately-resolvable module under the
+// `com.github.k2-fsa.sherpa-onnx` group, and `packaging { resources {
+// excludes } }` only runs at the packaging stage, after the compile
+// classpath has already been snapshotted. The fix that works is to
+// put the AAR in `runtimeOnly` so its classes.jar is never added to
+// the compile classpath in the first place. See the dependency block
+// above.
