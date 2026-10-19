@@ -87,9 +87,14 @@ class SherpaOnnxSttEngine @Inject constructor(
         // to sample_rate=16000 and feature_dim=80, which is exactly the
         // 16 kHz Zipformer configuration we want, so we don't set it
         // explicitly.
-        val modelConfig = OnlineModelConfig.builder()
+        //
+        // Kotlin's handling of Java static methods on classes that
+        // also have instance methods can be quirky; we instantiate
+        // the nested Builder classes directly via their public
+        // no-arg constructor. The Java side is unchanged.
+        val modelConfig = OnlineModelConfig.Builder()
             .setTransducer(
-                OnlineTransducerModelConfig.builder()
+                OnlineTransducerModelConfig.Builder()
                     .setEncoder(encoder.absolutePath)
                     .setDecoder(decoder.absolutePath)
                     .setJoiner(joiner.absolutePath)
@@ -104,9 +109,9 @@ class SherpaOnnxSttEngine @Inject constructor(
             .setProvider("cpu")
             .build()
 
-        val config = OnlineRecognizerConfig.builder()
+        val config = OnlineRecognizerConfig.Builder()
             .setFeatureConfig(
-                FeatureConfig.builder()
+                FeatureConfig.Builder()
                     .setSampleRate(SAMPLE_RATE_HZ)
                     .setFeatureDim(80)
                     .build()
