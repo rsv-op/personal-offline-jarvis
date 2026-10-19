@@ -96,9 +96,16 @@ val downloadSherpaAar: TaskProvider<Exec> = tasks.register<Exec>("downloadSherpa
     group = "build"
     description = "Download the sherpa-onnx 1.13.8 AAR from jitpack to a build-dir cache, and write a listing."
     val aarFile = layout.buildDirectory.file("sherpa-jni/sherpa-onnx-1.13.8.aar")
-    outputs.file(aarFile)
     val listingFile = layout.buildDirectory.file("sherpa-jni/aar-listing.txt")
-    outputs.file(listingFile)
+    // Register both output files at once. Two separate
+    // `outputs.file(...)` calls on a `TaskOutputs` builder
+    // REPLACE each other in some Gradle versions, so use the
+    // multi-arg form to declare both. Always re-run
+    // (`outputs.upToDateWhen { false }`) — the AAR is small
+    // (~50 MB) and we'd rather re-fetch than serve a stale
+    // copy from a partial download.
+    outputs.files(aarFile, listingFile)
+    outputs.upToDateWhen { false }
     val aarPath = aarFile.get().asFile.absolutePath
     val aarDir = aarFile.get().asFile.parentFile.absolutePath
     val listingPath = listingFile.get().asFile.absolutePath
