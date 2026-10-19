@@ -1,5 +1,6 @@
 import org.gradle.api.tasks.Copy
 import org.gradle.api.tasks.TaskProvider
+import java.net.URL
 
 plugins {
     id("com.android.application")
@@ -72,44 +73,43 @@ kotlin {
     }
 }
 
-// Private configuration that holds the sherpa-onnx AAR ONLY so its
-// jniLibs can be extracted at build time. The AAR is not added to any
-// of the regular Android configurations, so its classes.jar never
-// reaches the runtime classpath and there is no duplicate with the
-// sherpa-onnx-jvm jar that supplies the Java classes.
-val sherpaJniLibs: org.gradle.api.artifacts.Configuration by configurations.creating {
-    isVisible = false
-    isCanBeConsumed = false
-    isCanBeResolved = true
-}
-
-// Extract `jni/{arm64-v8a,armeabi-v7a}/*.so` from the AAR into a
-// build directory. The directory is added to
-// `android.sourceSets["main"].jniLibs.srcDirs` further below so the
-// .so files ship in the APK the same way committed jniLibs do.
+// Download the sherpa-onnx AAR directly via HTTP from jitpack and
+// extract its jni/{arm64-v8a,armeabi-v7a}/*.so into a build
+// directory. We deliberately AVOID declaring the AAR in any
+// Gradle configuration: AGP's `checkDebugDuplicateClasses` walks
+// every resolved artifact across every configuration in the
+// project, and any time the AAR is resolved AGP feeds its
+// `classes.jar` (registered internally as the
+// `sherpa-onnx-1.13.8-runtime` sub-artifact) into the duplicate
+// check alongside the JVM jar, which then fails.
 //
-// We do the unzip in `doFirst` (lazily) because the AAR file
-// resolution is itself lazy — at configuration time the
-// `sherpaJniLibs` configuration is not yet resolved.
+// Downloading via HTTP keeps the AAR entirely out of Gradle's
+// dependency graph. Only its jniLibs make it into the APK, via
+// `<outDir>/jni` becoming a jniLibs srcDir below.
 val extractSherpaJniLibs: TaskProvider<Copy> = tasks.register<Copy>("extractSherpaJniLibs") {
     group = "build"
-    description = "Unzip the sherpa-onnx AAR and copy its jni/{arm64-v8a,armeabi-v7a}/*.so into the build dir."
+    description = "Download the sherpa-onnx AAR from jitpack and copy its jni/{arm64-v8a,armeabi-v7a}/*.so into the build dir."
     val outDir = layout.buildDirectory.dir("sherpa-jni")
     outputs.dir(outDir)
-    // Re-run when the AAR is re-resolved (e.g. version bump).
-    inputs.files(sherpaJniLibs)
     doFirst {
-        val aar = sherpaJniLibs.files.singleOrNull()
-            ?: error("Expected exactly one sherpa-onnx AAR in '${sherpaJniLibs.name}'; got ${sherpaJniLibs.files}")
         // Clear the destination so stale .so files from a previous
         // AAR version don't linger.
         project.delete(outDir)
-        // Each entry preserves its path under `jni/`, so
-        // `jni/arm64-v8a/libsherpa-onnx-jni.so` lands at
-        // `<outDir>/jni/arm64-v8a/libsherpa-onnx-jni.so`. We then
-        // register `<outDir>/jni` as a jniLibs srcDir, which is the
-        // layout AGP expects.
-        from(zipTree(aar))
+        // Download the AAR to a local file, then unzip just the
+        // jni/<abi>/** subtree. The AAR is a zipfile at the
+        // gradle-published artifact path; its content is laid out
+        // as `jni/<abi>/<libname>.so` for our two target ABIs.
+        val aarUrl = java.net.URL(
+            "https://jitpack.io/com/github/k2-fsa/sherpa-onnx/sherpa-onnx/1.13.8/sherpa-onnx-1.13.8.aar"
+        )
+        val aarFile = layout.buildDirectory.file("sherpa-jni/sherpa-onnx-1.13.8.aar").get().asFile
+        aarFile.parentFile.mkdirs()
+        aarUrl.openStream().use { input ->
+            aarFile.outputStream().use { output ->
+                input.copyTo(output)
+            }
+        }
+        from(zipTree(aarFile))
         into(outDir)
         include("jni/arm64-v8a/**")
         include("jni/armeabi-v7a/**")
@@ -171,23 +171,24 @@ dependencies {
     // `sherpa-onnx-1.13.8-runtime`, and the AAR's classes.jar always
     // shows up in the runtime classpath regardless of
     // `runtimeOnly` / `packaging { resources { excludes } }` /
-    // `configurations.all { exclude(group, module) }`.
+    // `configurations.all { exclude(group, module) }` / a private
+    // `sherpaJniLibs` configuration. AGP's `checkDebugDuplicateClasses`
+    // walks every resolved artifact across every configuration, so
+    // any time the AAR is resolved its classes.jar ends up next to
+    // the JVM jar's classes.jar and the duplicate check fails.
     //
-    // The robust fix is to drop the AAR as a regular dependency
-    // entirely. We declare it in a private `sherpaJniLibs`
-    // configuration just so Gradle resolves and downloads it, then
-    // `extractSherpaJniLibs` (a Copy task, see the
-    // `tasks.register` block at the bottom of this file) unzips the
-    // AAR and copies `jni/{arm64-v8a,armeabi-v7a}/*.so` into
-    // `app/build/sherpa-jni/<abi>/`. That directory is added to
-    // `android.sourceSets["main"].jniLibs.srcDirs` so the .so files
-    // are bundled into the APK as if they were committed to
-    // `app/src/main/jniLibs/`.
+    // The robust fix is to NOT add the AAR to any Gradle
+    // configuration. Instead, the `extractSherpaJniLibs` Copy task
+    // (see the `tasks.register` block above) downloads the AAR
+    // directly from jitpack via HTTP, unzips
+    // `jni/{arm64-v8a,armeabi-v7a}/*.so` into
+    // `app/build/sherpa-jni/<abi>/`, and that directory is registered
+    // as a jniLibs srcDir. The .so files ship in the APK as if they
+    // were committed to `app/src/main/jniLibs/`, but Gradle's
+    // dependency graph never sees the AAR.
     //
-    // The JVM jar is the only thing on the classpath. Its
-    // `com.k2fsa.sherpa.onnx.*` types are byte-identical to (and a
-    // superset of) the AAR's, so dex never sees a duplicate.
-    "sherpaJniLibs"("com.github.k2-fsa.sherpa-onnx:sherpa-onnx:1.13.8@aar")
+    // The JVM jar is the only contributor of
+    // `com.k2fsa.sherpa.onnx.*` types on the classpath.
     implementation("com.github.k2-fsa.sherpa-onnx:sherpa-onnx-jvm:1.13.8")
     implementation("com.google.ai.edge.litertlm:litertlm-android:0.18.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.6.2")
