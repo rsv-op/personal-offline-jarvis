@@ -20,7 +20,7 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.RequestMultiplePermissions()
     ) { /* The view model reports microphone permission errors if access is denied. */ }
 
-    /** Extracted Vosk model folder. */
+    /** Extracted sherpa-onnx model folder. */
     private val modelFolderPicker = registerForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
     ) { uri ->
@@ -30,7 +30,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** Vosk model `.zip` straight from the model catalog — no unzip app required. */
+    /** sherpa-onnx model `.zip` archive. */
     private val modelArchivePicker = registerForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri ->

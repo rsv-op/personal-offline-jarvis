@@ -45,12 +45,12 @@ class MemoryBudgetTest {
     }
 
     @Test
-    fun `the Vosk headroom is more generous than LiteRT`() {
+    fun `the sherpa-onnx headroom is more generous than LiteRT`() {
         val available = mb(3_500)
         val model = mb(2_000)
         // 2.5× headroom (LiteRT): needs 5000 MB → refuse.
         assertNotNull(refusalReason(available, model, headroomMultiplier = 2.5))
-        // 1.5× headroom (Vosk): needs 3000 MB → allow.
+        // 1.5× headroom (sherpa-onnx): needs 3000 MB → allow.
         assertNull(refusalReason(available, model, headroomMultiplier = 1.5))
     }
 
@@ -75,8 +75,8 @@ class MemoryBudgetTest {
     }
 
     @Test
-    fun `the lgraph 2_3GB Vosk model is allowed on 4 GB free RAM`() {
-        // Vosk uses 1.5× headroom. 2.3 GB × 1.5 = 3.45 GB; 4 GB free → fine.
+    fun `a 2_3GB speech model is allowed on 4 GB free RAM`() {
+        // sherpa-onnx uses 1.5× headroom. 2.3 GB × 1.5 = 3.45 GB; 4 GB free → fine.
         val available = mb(4_000)
         val model = mb(2_300)
         assertNull(refusalReason(available, model, headroomMultiplier = 1.5))

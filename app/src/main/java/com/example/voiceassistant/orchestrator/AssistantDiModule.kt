@@ -18,8 +18,8 @@ import com.example.voiceassistant.generation.RuleBasedLocalTextGenerator
 import com.example.voiceassistant.nlp.IntentRouter
 import com.example.voiceassistant.nlp.NlpProcessor
 import com.example.voiceassistant.nlp.TextNormalizer
+import com.example.voiceassistant.stt.SherpaOnnxSttEngine
 import com.example.voiceassistant.stt.SttEngine
-import com.example.voiceassistant.stt.VoskSttEngine
 import com.example.voiceassistant.vault.AndroidKeystoreVaultCipher
 import com.example.voiceassistant.vault.JarvisMemory
 import com.example.voiceassistant.vault.SecureVault
@@ -77,7 +77,7 @@ object AssistantDiModule {
 
     @Provides
     @Singleton
-    fun provideSttEngine(engine: VoskSttEngine): SttEngine = engine
+    fun provideSttEngine(engine: SherpaOnnxSttEngine): SttEngine = engine
 
     @Provides
     @Singleton

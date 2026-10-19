@@ -7,28 +7,43 @@ import java.util.zip.ZipInputStream
 /**
  * The pure-JVM half of the speech-model import: unzipping, validation and model lookup.
  *
- * This used to live inside [VoskModelStore] next to the Android types, which made it
+ * This used to live inside [SherpaOnnxModelStore] next to the Android types, which made it
  * untestable on the JVM — and that is exactly how a serious bug shipped: the zip entry was
  * closed *before* its bytes were read, so every extracted file was created empty. The
  * resulting model still passed the old "conf/model.conf exists" check, so the import was
- * reported as successful and only failed much later, when Vosk tried to load it
+ * reported as successful and only failed much later, when the recogniser tried to load it
  * ("Could not initialise the offline speech model").
+ *
+ * The Vosk-specific content validation (looking for `conf/model.conf`)
+ * was the heart of the old `ModelArchiveExtractor.describeModelProblem`
+ * check. After PR #27 the recogniser is sherpa-onnx, which has a flat
+ * file layout (tokens.txt + encoder/decoder/joiner .onnx) rather than
+ * Vosk's `conf/model.conf` + `am/final.mdl` + `graph/HCLG.fst`. The
+ * content rules are now in [SherpaOnnxModelValidator]; this object
+ * keeps the generic zip-extraction primitives (the [Budget], the
+ * zip-slip-safe path resolution, the entry-count cap) that are reused
+ * for any model archive regardless of recogniser.
  *
  * Nothing here touches Android, so `ModelArchiveExtractorTest` can assert the real bytes.
  */
 internal object ModelArchiveExtractor {
 
-    /** A Vosk model is useless without a non-trivial configuration file and payload. */
+    /**
+     * Legacy Vosk config path. Kept as a constant for tests that
+     * still want to assert the old rejection messages, but
+     * sherpa-onnx recognition looks at [SherpaOnnxModelValidator] now.
+     */
     const val CONFIG_FILE = "conf/model.conf"
 
     /** Anything smaller than this cannot be a usable speech model. */
     const val MIN_MODEL_BYTES = 1_048_576L
 
     /**
-     * 3 GiB. The largest official Vosk model (`vosk-model-en-us-0.22-lgraph`) extracts to
-     * about 2.3 GB, and any future model is bounded well below this on a phone. The cap
-     * is enforced against the *extracted* total, not the archive size, so a tightly-packed
-     * zip of a 2.3 GB model passes too.
+     * 3 GiB. The largest official sherpa-onnx model is well under
+     * 1 GB, but the cap is sized for any future model and matches the
+     * Vosk-era ceiling. The cap is enforced against the *extracted*
+     * total, not the archive size, so a tightly-packed zip of a large
+     * model passes too.
      */
     const val MAX_MODEL_BYTES = 3L * 1024L * 1024L * 1024L
     const val MAX_SEARCH_DEPTH = 6
