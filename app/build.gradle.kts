@@ -120,8 +120,17 @@ val extractSherpaJniLibs: TaskProvider<Copy> = tasks.register<Copy>("extractSher
         }
         from(zipTree(aarFile))
         into(outDir)
+        // The AAR's jniLibs live under `jni/<abi>/<libname>.so`,
+        // matching the Android library convention. Some prebuilt
+        // sherpa-onnx AARs use the legacy `lib/<abi>/<libname>.so`
+        // layout instead, so we include both. The two patterns are
+        // OR-ed, so the actual on-disk layout determines which
+        // one matches; if both match, the destination is just
+        // overwritten (the .so files are byte-identical).
         include("jni/arm64-v8a/**")
         include("jni/armeabi-v7a/**")
+        include("lib/arm64-v8a/**")
+        include("lib/armeabi-v7a/**")
     }
 }
 
