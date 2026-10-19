@@ -43,6 +43,14 @@ android {
         }
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+            // The sherpa-onnx AAR's classes.jar and the sherpa-onnx-jvm
+            // jar both ship com.k2fsa.sherpa.onnx.AudioEvent and a few
+            // other classes. The AAR's classes.jar is a subset of the
+            // JVM jar and is missing the `Builder` inner classes the
+            // new fluent API uses, so the JVM jar is the authoritative
+            // source. We exclude the AAR's copies by file path so dex
+            // only sees the JVM-jar copy.
+            excludes += "**/com/k2fsa/sherpa/onnx/AudioEvent.class"
         }
     }
 
@@ -133,14 +141,9 @@ dependencies {
 
 // The sherpa-onnx AAR's classes.jar is registered as a transitive
 // module named `sherpa-onnx-1.13.8-runtime` by jitpack's repackaging.
-// Both it and the JVM jar ship a small set of `com.k2fsa.sherpa.onnx.*`
-// classes (AudioEvent is the one Gradle's checkDebugDuplicateClasses
-// complains about). The AAR's classes.jar is a subset of the JVM jar
-// and is missing the `Builder` inner classes the new fluent API uses,
-// so the JVM jar is the authoritative source. Excluding the AAR's
-// runtime module drops the AAR's contribution to the dex classpath
-// (so AudioEvent, etc., come from the JVM jar only) without affecting
-// the AAR's AndroidManifest, jniLibs, or packaging metadata.
-configurations.all {
-    exclude(group = "com.github.k2-fsa.sherpa-onnx", module = "sherpa-onnx-1.13.8-runtime")
-}
+// The earlier attempt to drop the AAR's classes.jar with a
+// `configurations.all { exclude(group, module) }` did not match — the
+// AAR's classes.jar is not a separately-resolvable module under the
+// group we depend on. The new fix uses `packaging { resources {
+// excludes } }` on the specific class file path instead. See the
+// excludes block above for the actual rule.
