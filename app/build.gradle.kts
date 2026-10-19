@@ -98,14 +98,24 @@ val extractSherpaJniLibs: TaskProvider<Copy> = tasks.register<Copy>("extractSher
         // jni/<abi>/** subtree. The AAR is a zipfile at the
         // gradle-published artifact path; its content is laid out
         // as `jni/<abi>/<libname>.so` for our two target ABIs.
-        val aarUrl: java.net.URL = java.net.URL(
-            "https://jitpack.io/com/github/k2-fsa/sherpa-onnx/sherpa-onnx/1.13.8/sherpa-onnx-1.13.8.aar"
-        )
+        val aarUrl: String = "https://jitpack.io/com/github/k2-fsa/sherpa-onnx/sherpa-onnx/1.13.8/sherpa-onnx-1.13.8.aar"
         val aarFile = layout.buildDirectory.file("sherpa-jni/sherpa-onnx-1.13.8.aar").get().asFile
         aarFile.parentFile.mkdirs()
-        aarUrl.openStream().use { input ->
-            aarFile.outputStream().use { output ->
-                input.copyTo(output)
+        // Download the AAR over HTTP. We use `java.net.URL` via
+        // FQN in a `withGroovyBuilder` block because the
+        // precompiled-script classpath doesn't always resolve
+        // `java.net.*` from a Kotlin DSL Copy task's `doFirst`
+        // (it caused an 'Unresolved reference: net' compile
+        // error on a previous attempt).
+        withGroovyBuilder {
+            "ant" {
+                "get"(
+                    mapOf(
+                        "src" to aarUrl,
+                        "dest" to aarFile.absolutePath,
+                        "verbose" to true,
+                    )
+                )
             }
         }
         from(zipTree(aarFile))
