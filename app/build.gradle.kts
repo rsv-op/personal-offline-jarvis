@@ -85,75 +85,65 @@ kotlin {
 // Downloading via HTTP keeps the AAR entirely out of Gradle's
 // dependency graph. Only its jniLibs make it into the APK, via
 // `<outDir>/jni` becoming a jniLibs srcDir below.
+//
+// Splitting into two tasks: `downloadSherpaAar` is a plain `Exec`
+// that fetches the AAR and ALWAYS prints its `unzip -l` listing
+// (so the next CI log makes the on-disk layout unambiguous even
+// if the downstream extraction is a no-op). `extractSherpaJniLibs`
+// is a `Copy` that depends on the download and unzips the
+// prebuilt jniLibs into the build dir.
+val downloadSherpaAar: TaskProvider<Exec> = tasks.register<Exec>("downloadSherpaAar") {
+    group = "build"
+    description = "Download the sherpa-onnx 1.13.8 AAR from jitpack to a build-dir cache."
+    val aarFile = layout.buildDirectory.file("sherpa-jni/sherpa-onnx-1.13.8.aar")
+    outputs.file(aarFile)
+    val aarPath = aarFile.get().asFile.absolutePath
+    val aarDir = aarFile.get().asFile.parentFile.absolutePath
+    // curl is universally available on the ubuntu-latest GitHub
+    // runner. We download with `-f` so a 4xx/5xx becomes a non-
+    // zero exit and the build fails loudly instead of producing
+    // an empty .aar.
+    commandLine = listOf(
+        "sh", "-c",
+        "mkdir -p '$aarDir' && " +
+            "curl -fSL --retry 3 -o '$aarPath' " +
+            "https://jitpack.io/com/github/k2-fsa/sherpa-onnx/sherpa-onnx/1.13.8/sherpa-onnx-1.13.8.aar " +
+            "&& unzip -l '$aarPath'"
+    )
+}
+
 val extractSherpaJniLibs: TaskProvider<Copy> = tasks.register<Copy>("extractSherpaJniLibs") {
     group = "build"
-    description = "Download the sherpa-onnx AAR from jitpack and copy its jni/{arm64-v8a,armeabi-v7a}/*.so into the build dir."
+    description = "Unzip the sherpa-onnx AAR and copy its {jniLibs,jni,lib}/{arm64-v8a,armeabi-v7a}/*.so into the build dir."
+    dependsOn(downloadSherpaAar)
     val outDir = layout.buildDirectory.dir("sherpa-jni")
     outputs.dir(outDir)
     doFirst {
         // Clear the destination so stale .so files from a previous
         // AAR version don't linger.
         project.delete(outDir)
-        // Download the AAR to a local file, then unzip just the
-        // jni/<abi>/** subtree. The AAR is a zipfile at the
-        // gradle-published artifact path; its content is laid out
-        // as `jni/<abi>/<libname>.so` for our two target ABIs.
-        val aarUrl: String = "https://jitpack.io/com/github/k2-fsa/sherpa-onnx/sherpa-onnx/1.13.8/sherpa-onnx-1.13.8.aar"
-        val aarFile = layout.buildDirectory.file("sherpa-jni/sherpa-onnx-1.13.8.aar").get().asFile
-        aarFile.parentFile.mkdirs()
-        // Download the AAR over HTTP. We use `java.net.URL` via
-        // FQN in a `withGroovyBuilder` block because the
-        // precompiled-script classpath doesn't always resolve
-        // `java.net.*` from a Kotlin DSL Copy task's `doFirst`
-        // (it caused an 'Unresolved reference: net' compile
-        // error on a previous attempt).
-        withGroovyBuilder {
-            "ant" {
-                "get"(
-                    mapOf(
-                        "src" to aarUrl,
-                        "dest" to aarFile.absolutePath,
-                        "verbose" to true,
-                    )
-                )
-            }
-        }
-        from(zipTree(aarFile))
-        into(outDir)
-        // The k2-fsa/sherpa-onnx AAR is built with the layout
-        // `jniLibs/<abi>/<libname>.so` (the workflow at
-        // .github/workflows/android.yaml copies the prebuilt
-        // .so files into `android/SherpaOnnxAar/sherpa_onnx/
-        // src/main/jniLibs/<abi>/` and runs `:sherpa_onnx:
-        // assembleRelease`). Some other AARs in the wild use
-        // `jni/<abi>/**` (the older convention AGP used to use
-        // internally) or the legacy `lib/<abi>/**`. Include all
-        // three so the same `extractSherpaJniLibs` works against
-        // any of them. Patterns are OR-ed; if the same file
-        // shows up at multiple paths, the destination is just
-        // overwritten (byte-identical).
-        include("jniLibs/arm64-v8a/**")
-        include("jniLibs/armeabi-v7a/**")
-        include("jni/arm64-v8a/**")
-        include("jni/armeabi-v7a/**")
-        include("lib/arm64-v8a/**")
-        include("lib/armeabi-v7a/**")
-        // Debug: print every top-level directory and `.so` path
-        // inside the AAR so the next CI log makes the actual
-        // layout unambiguous. Cheap (a single `unzip -l`).
-        doLast {
-            val rgx = "unzip -l ${aarFile.absolutePath}"
-            val proc = ProcessBuilder("sh", "-c", rgx)
-                .redirectErrorStream(true)
-                .start()
-            val listing = proc.inputStream.bufferedReader().readText()
-            proc.waitFor()
-            val interesting = listing.lineSequence()
-                .filter { it.contains("jni") || it.contains("lib/") }
-                .joinToString("\n")
-            logger.lifecycle("extractSherpaJniLibs: AAR contents (filtered):\n$interesting")
-        }
     }
+    val aarFile = layout.buildDirectory.file("sherpa-jni/sherpa-onnx-1.13.8.aar").get().asFile
+    from(zipTree(aarFile))
+    into(outDir)
+    // The k2-fsa/sherpa-onnx AAR is built with the layout
+    // `jniLibs/<abi>/<libname>.so` (the workflow at
+    // .github/workflows/android.yaml copies the prebuilt
+    // .so files into `android/SherpaOnnxAar/sherpa_onnx/
+    // src/main/jniLibs/<abi>/` and runs `:sherpa_onnx:
+    // assembleRelease`). Some other AARs in the wild use
+    // `jni/<abi>/**` (the older convention AGP used to use
+    // internally) or the legacy `lib/<abi>/**`. Include all
+    // three so the same `extractSherpaJniLibs` works against
+    // any of them. Patterns are OR-ed; if the same file
+    // shows up at multiple paths, the destination is just
+    // overwritten (byte-identical).
+    include("jniLibs/arm64-v8a/**")
+    include("jniLibs/armeabi-v7a/**")
+    include("jni/arm64-v8a/**")
+    include("jni/armeabi-v7a/**")
+    include("lib/arm64-v8a/**")
+    include("lib/armeabi-v7a/**")
 }
 
 // Hand the extracted `<outDir>/{jniLibs,jni,lib}/<abi>/<libname>.so`
