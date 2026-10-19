@@ -1,3 +1,7 @@
+import org.gradle.api.Configuration
+import org.gradle.api.tasks.Copy
+import org.gradle.api.tasks.TaskProvider
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -36,9 +40,12 @@ android {
     packaging {
         jniLibs {
             pickFirsts += "**/liblitertlm_jni.so"
-            // sherpa-onnx 1.13.8 AAR bundles libsherpa-onnx-jni.so for
-            // arm64-v8a and armeabi-v7a. If a transitive AAR also ships
-            // an identically-named .so, prefer the sherpa-onnx copy.
+            // The sherpa-onnx `libsherpa-onnx-jni.so` is now pulled
+            // out of the AAR by `extractSherpaJniLibs` and lives at
+            // `app/build/sherpa-jni/jni/<abi>/`. The litertlm AAR also
+            // brings its own JNI libraries; if any of them happen to
+            // share a filename, prefer the litertlm copy (it is what
+            // the rest of the app is built and tested against).
             pickFirsts += "**/libsherpa-onnx-jni.so"
         }
         resources {
@@ -66,6 +73,82 @@ kotlin {
     }
 }
 
+// Private configuration that holds the sherpa-onnx AAR ONLY so its
+// jniLibs can be extracted at build time. The AAR is not added to any
+// of the regular Android configurations, so its classes.jar never
+// reaches the runtime classpath and there is no duplicate with the
+// sherpa-onnx-jvm jar that supplies the Java classes.
+val sherpaJniLibs: Configuration by configurations.creating {
+    isVisible = false
+    isCanBeConsumed = false
+    isCanBeResolved = true
+}
+
+// Extract `jni/{arm64-v8a,armeabi-v7a}/*.so` from the AAR into a
+// build directory. The directory is added to
+// `android.sourceSets["main"].jniLibs.srcDirs` further below so the
+// .so files ship in the APK the same way committed jniLibs do.
+//
+// We do the unzip in `doFirst` (lazily) because the AAR file
+// resolution is itself lazy — at configuration time the
+// `sherpaJniLibs` configuration is not yet resolved.
+val extractSherpaJniLibs: TaskProvider<Copy> = tasks.register<Copy>("extractSherpaJniLibs") {
+    group = "build"
+    description = "Unzip the sherpa-onnx AAR and copy its jni/{arm64-v8a,armeabi-v7a}/*.so into the build dir."
+    val outDir = layout.buildDirectory.dir("sherpa-jni")
+    outputs.dir(outDir)
+    // Re-run when the AAR is re-resolved (e.g. version bump).
+    inputs.files(sherpaJniLibs)
+    doFirst {
+        val aar = sherpaJniLibs.files.singleOrNull()
+            ?: error("Expected exactly one sherpa-onnx AAR in '${sherpaJniLibs.name}'; got ${sherpaJniLibs.files}")
+        // Clear the destination so stale .so files from a previous
+        // AAR version don't linger.
+        project.delete(outDir)
+        // Each entry preserves its path under `jni/`, so
+        // `jni/arm64-v8a/libsherpa-onnx-jni.so` lands at
+        // `<outDir>/jni/arm64-v8a/libsherpa-onnx-jni.so`. We then
+        // register `<outDir>/jni` as a jniLibs srcDir, which is the
+        // layout AGP expects.
+        from(zipTree(aar))
+        into(outDir)
+        include("jni/arm64-v8a/**")
+        include("jni/armeabi-v7a/**")
+    }
+}
+
+// Hand the extracted `<outDir>/jni` to AGP as if it were a committed
+// `app/src/main/jniLibs/`. The `<outDir>/jni/{arm64-v8a,armeabi-v7a}`
+// subtree is exactly the layout AGP expects, so no further rewriting
+// is required.
+val sherpaJniSrcDir = layout.buildDirectory.dir("sherpa-jni/jni")
+android.sourceSets["main"].jniLibs.srcDirs(sherpaJniSrcDir)
+
+// Make sure the .so files are extracted before any AGP task that
+// inspects the jniLibs srcDirs (e.g. mergeDebugJniLibs,
+// packageDebug, the Build workflow's aapt2 dump). Hooking into
+// `preBuild` is the safest: it runs before everything AGP does
+// during a normal build, so the jniLibs srcDir is populated by the
+// time AGP walks it.
+tasks.matching { it.name == "preBuild" }
+    .configureEach { dependsOn(extractSherpaJniLibs) }
+// Belt-and-suspenders: also depend on the specific merge and package
+// tasks in case preBuild is bypassed (e.g. by `gradle :app:mergeDebugJniLibs`).
+tasks.matching { it.name.startsWith("merge") && it.name.endsWith("JniLibFolders") }
+    .configureEach { dependsOn(extractSherpaJniLibs) }
+tasks.matching { it.name.startsWith("merge") && it.name.endsWith("JniLibs") }
+    .configureEach { dependsOn(extractSherpaJniLibs) }
+tasks.matching { it.name == "mergeDebugJniLibFolders" || it.name == "mergeReleaseJniLibFolders" }
+    .configureEach { dependsOn(extractSherpaJniLibs) }
+tasks.matching { it.name == "mergeDebugJniLibs" || it.name == "mergeReleaseJniLibs" }
+    .configureEach { dependsOn(extractSherpaJniLibs) }
+tasks.matching { it.name == "packageDebug" || it.name == "packageRelease" }
+    .configureEach { dependsOn(extractSherpaJniLibs) }
+tasks.matching { it.name == "assembleDebug" || it.name == "assembleRelease" }
+    .configureEach { dependsOn(extractSherpaJniLibs) }
+tasks.matching { it.name == "testDebugUnitTest" || it.name == "testReleaseUnitTest" }
+    .configureEach { dependsOn(extractSherpaJniLibs) }
+
 dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
@@ -84,27 +167,28 @@ dependencies {
     // NOT inside the AAR — they live in a separate `sherpa-onnx-jvm`
     // jar at the same jitpack coordinates.
     //
-    // We depend on both. The AAR is `runtimeOnly` so its classes.jar
-    // (a subset of the JVM jar, also missing the `Builder` inner
-    // classes the new fluent API uses) is NOT on the compile
-    // classpath. The JVM jar is what the Kotlin compiler sees for
-    // the Java types.
+    // Several rounds of "exclude" attempts failed: AGP registers the
+    // AAR's classes.jar as an internal sub-artifact named
+    // `sherpa-onnx-1.13.8-runtime`, and the AAR's classes.jar always
+    // shows up in the runtime classpath regardless of
+    // `runtimeOnly` / `packaging { resources { excludes } }` /
+    // `configurations.all { exclude(group, module) }`.
     //
-    // `runtimeOnly` alone is not enough: AGP still exposes the AAR's
-    // `classes.jar` to the runtime classpath as an internal
-    // sub-artifact named `sherpa-onnx-1.13.8-runtime`, and the
-    // resulting duplicate is caught by `:app:checkDebugDuplicateClasses`
-    // (the check fires on the *runtime* classpath, not just the
-    // compile one). Excluding the AAR's `-runtime` sub-artifact from
-    // every configuration the AAR participates in drops the AAR's
-    // contribution to dex while keeping the AAR's jniLibs
-    // (`libsherpa-onnx-jni.so` for arm64-v8a and armeabi-v7a) and
-    // packaging metadata. The JVM jar is the only contributor of
-    // `com.k2fsa.sherpa.onnx.*` types.
-    runtimeOnly("com.github.k2-fsa.sherpa-onnx:sherpa-onnx:1.13.8@aar") {
-        exclude(group = "com.github.k2-fsa.sherpa-onnx", module = "sherpa-onnx-1.13.8-runtime")
-        exclude(group = "com.github.k2-fsa.sherpa-onnx", module = "sherpa-onnx-runtime")
-    }
+    // The robust fix is to drop the AAR as a regular dependency
+    // entirely. We declare it in a private `sherpaJniLibs`
+    // configuration just so Gradle resolves and downloads it, then
+    // `extractSherpaJniLibs` (a Copy task, see the
+    // `tasks.register` block at the bottom of this file) unzips the
+    // AAR and copies `jni/{arm64-v8a,armeabi-v7a}/*.so` into
+    // `app/build/sherpa-jni/<abi>/`. That directory is added to
+    // `android.sourceSets["main"].jniLibs.srcDirs` so the .so files
+    // are bundled into the APK as if they were committed to
+    // `app/src/main/jniLibs/`.
+    //
+    // The JVM jar is the only thing on the classpath. Its
+    // `com.k2fsa.sherpa.onnx.*` types are byte-identical to (and a
+    // superset of) the AAR's, so dex never sees a duplicate.
+    "sherpaJniLibs"("com.github.k2-fsa.sherpa-onnx:sherpa-onnx:1.13.8@aar")
     implementation("com.github.k2-fsa.sherpa-onnx:sherpa-onnx-jvm:1.13.8")
     implementation("com.google.ai.edge.litertlm:litertlm-android:0.18.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.6.2")
@@ -146,11 +230,17 @@ dependencies {
 //    the `excludes` only runs at the APK packaging stage, AFTER
 //    `:app:checkDebugDuplicateClasses` has already failed on the
 //    duplicate in the runtime classpath.
-//  * `runtimeOnly` alone — the AAR's classes.jar is still in the
-//    runtime classpath as the `-runtime` sub-artifact; dex sees both
-//    copies and fails the duplicate check.
+//  * `runtimeOnly` alone, or `runtimeOnly(...) { exclude(module = "sherpa-onnx-1.13.8-runtime") }` —
+//    AGP still creates an internal `sherpa-onnx-1.13.8-runtime`
+//    sub-artifact from the AAR's classes.jar and feeds it into the
+//    runtime classpath. The `-runtime` name is a Gradle construct,
+//    not a module, so the exclude never matches. `checkDebugDuplicateClasses`
+//    keeps failing.
 //
-// The working fix is `runtimeOnly(...) { exclude(module = "sherpa-onnx-1.13.8-runtime") }`
-// in the dependency block above, which drops the AAR's
-// sub-artifact from the runtime classpath while keeping the AAR's
-// jniLibs and packaging metadata.
+// The working fix is to declare the AAR in a private `sherpaJniLibs`
+// configuration (above the `dependencies` block) and unzip its
+// jni/{arm64-v8a,armeabi-v7a}/*.so into a build directory via the
+// `extractSherpaJniLibs` Copy task. The directory is registered as a
+// jniLibs srcDir, so the .so files ship in the APK as if they were
+// committed to `app/src/main/jniLibs/`. The AAR's classes.jar is
+// never on the classpath, so there is no duplicate with the JVM jar.
