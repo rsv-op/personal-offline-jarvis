@@ -84,17 +84,27 @@ dependencies {
     // NOT inside the AAR — they live in a separate `sherpa-onnx-jvm`
     // jar at the same jitpack coordinates.
     //
-    // We list the AAR as `runtimeOnly` so its classes.jar (a subset
-    // of the JVM jar, also missing the `Builder` inner classes the
-    // new fluent API uses) is NOT in the compile classpath. The JVM
-    // jar is the only thing the Kotlin compiler sees, and `runtimeOnly`
-    // still flows the AAR's jniLibs (`libsherpa-onnx-jni.so`,
-    // `libonnxruntime.so`) and packaging metadata into the APK.
-    // At runtime both jars end up in the APK and dex silently accepts
-    // the byte-identical duplicates, but the compile-classpath
-    // `checkDebugDuplicateClasses` (the only check that actually
-    // fails) now sees only the JVM jar.
-    runtimeOnly("com.github.k2-fsa.sherpa-onnx:sherpa-onnx:1.13.8@aar")
+    // We depend on both. The AAR is `runtimeOnly` so its classes.jar
+    // (a subset of the JVM jar, also missing the `Builder` inner
+    // classes the new fluent API uses) is NOT on the compile
+    // classpath. The JVM jar is what the Kotlin compiler sees for
+    // the Java types.
+    //
+    // `runtimeOnly` alone is not enough: AGP still exposes the AAR's
+    // `classes.jar` to the runtime classpath as an internal
+    // sub-artifact named `sherpa-onnx-1.13.8-runtime`, and the
+    // resulting duplicate is caught by `:app:checkDebugDuplicateClasses`
+    // (the check fires on the *runtime* classpath, not just the
+    // compile one). Excluding the AAR's `-runtime` sub-artifact from
+    // every configuration the AAR participates in drops the AAR's
+    // contribution to dex while keeping the AAR's jniLibs
+    // (`libsherpa-onnx-jni.so` for arm64-v8a and armeabi-v7a) and
+    // packaging metadata. The JVM jar is the only contributor of
+    // `com.k2fsa.sherpa.onnx.*` types.
+    runtimeOnly("com.github.k2-fsa.sherpa-onnx:sherpa-onnx:1.13.8@aar") {
+        exclude(group = "com.github.k2-fsa.sherpa-onnx", module = "sherpa-onnx-1.13.8-runtime")
+        exclude(group = "com.github.k2-fsa.sherpa-onnx", module = "sherpa-onnx-runtime")
+    }
     implementation("com.github.k2-fsa.sherpa-onnx:sherpa-onnx-jvm:1.13.8")
     implementation("com.google.ai.edge.litertlm:litertlm-android:0.18.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.6.2")
@@ -127,12 +137,20 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
 
-// Earlier attempt: a `configurations.all { exclude(group, module) }`
-// targeting `sherpa-onnx-1.13.8-runtime` did not work — the AAR's
-// classes.jar is not a separately-resolvable module under the
-// `com.github.k2-fsa.sherpa-onnx` group, and `packaging { resources {
-// excludes } }` only runs at the packaging stage, after the compile
-// classpath has already been snapshotted. The fix that works is to
-// put the AAR in `runtimeOnly` so its classes.jar is never added to
-// the compile classpath in the first place. See the dependency block
-// above.
+// Earlier attempts that did NOT work and why:
+//  * `configurations.all { exclude(group, module = "sherpa-onnx-1.13.8-runtime") }` —
+//    the AAR's classes.jar is not a separately-resolvable module under
+//    the `com.github.k2-fsa.sherpa-onnx` group, so the exclude silently
+//    matches nothing.
+//  * `packaging { resources { excludes += "**/com/k2fsa/sherpa/onnx/AudioEvent.class" } }` —
+//    the `excludes` only runs at the APK packaging stage, AFTER
+//    `:app:checkDebugDuplicateClasses` has already failed on the
+//    duplicate in the runtime classpath.
+//  * `runtimeOnly` alone — the AAR's classes.jar is still in the
+//    runtime classpath as the `-runtime` sub-artifact; dex sees both
+//    copies and fails the duplicate check.
+//
+// The working fix is `runtimeOnly(...) { exclude(module = "sherpa-onnx-1.13.8-runtime") }`
+// in the dependency block above, which drops the AAR's
+// sub-artifact from the runtime classpath while keeping the AAR's
+// jniLibs and packaging metadata.
