@@ -1,6 +1,5 @@
 import org.gradle.api.tasks.Copy
 import org.gradle.api.tasks.TaskProvider
-import java.net.URL
 
 plugins {
     id("com.android.application")
@@ -99,7 +98,7 @@ val extractSherpaJniLibs: TaskProvider<Copy> = tasks.register<Copy>("extractSher
         // jni/<abi>/** subtree. The AAR is a zipfile at the
         // gradle-published artifact path; its content is laid out
         // as `jni/<abi>/<libname>.so` for our two target ABIs.
-        val aarUrl = java.net.URL(
+        val aarUrl: java.net.URL = java.net.URL(
             "https://jitpack.io/com/github/k2-fsa/sherpa-onnx/sherpa-onnx/1.13.8/sherpa-onnx-1.13.8.aar"
         )
         val aarFile = layout.buildDirectory.file("sherpa-jni/sherpa-onnx-1.13.8.aar").get().asFile
