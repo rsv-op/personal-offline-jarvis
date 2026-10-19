@@ -1,4 +1,3 @@
-import org.gradle.api.Configuration
 import org.gradle.api.tasks.Copy
 import org.gradle.api.tasks.TaskProvider
 
@@ -78,7 +77,7 @@ kotlin {
 // of the regular Android configurations, so its classes.jar never
 // reaches the runtime classpath and there is no duplicate with the
 // sherpa-onnx-jvm jar that supplies the Java classes.
-val sherpaJniLibs: Configuration by configurations.creating {
+val sherpaJniLibs: org.gradle.api.artifacts.Configuration by configurations.creating {
     isVisible = false
     isCanBeConsumed = false
     isCanBeResolved = true
