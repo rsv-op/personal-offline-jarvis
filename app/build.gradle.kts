@@ -1,5 +1,3 @@
-import org.gradle.api.GradleException
-import org.gradle.api.tasks.Copy
 import org.gradle.api.tasks.TaskProvider
 
 plugins {
@@ -99,69 +97,45 @@ kotlin {
 // equation. The full `unzip -l` listing is still written to
 // `aar-listing.txt` so the `Post the sherpa-onnx AAR listing
 // to the PR` workflow step can post it.
-val extractSherpaJniLibs: TaskProvider<Copy> = tasks.register<Copy>("extractSherpaJniLibs") {
+val extractSherpaJniLibs: TaskProvider<Exec> = tasks.register<Exec>("extractSherpaJniLibs") {
     group = "build"
-    description = "Download the sherpa-onnx 1.13.8 AAR from jitpack and unzip the jniLibs into the build dir."
+    description = "Download the sherpa-onnx 1.13.8 AAR from jitpack and unzip its jniLibs into the build dir."
     val aarFile = layout.buildDirectory.file("sherpa-jni/sherpa-onnx-1.13.8.aar")
     val listingFile = layout.buildDirectory.file("sherpa-jni/aar-listing.txt")
     val outDir = layout.buildDirectory.dir("sherpa-jni")
     outputs.dir(outDir)
-    // Disable up-to-date checking entirely. The output dir
-    // is a build/ subdirectory that Gradle wipes between
-    // builds anyway, and a stale-cache failure here would
-    // just re-derive to "the AAR isn't there" again.
     outputs.upToDateWhen { false }
     val aarPath = aarFile.get().asFile.absolutePath
     val aarDir = aarFile.get().asFile.parentFile.absolutePath
     val listingPath = listingFile.get().asFile.absolutePath
     val aarUrl = "https://jitpack.io/com/github/k2-fsa/sherpa-onnx/sherpa-onnx/1.13.8/sherpa-onnx-1.13.8.aar"
-    doFirst {
-        // Clear the destination so stale .so files from a
-        // previous AAR version don't linger.
-        project.delete(outDir)
-        // Download the AAR over HTTP and write the listing
-        // next to it. curl is universally available on
-        // ubuntu-latest. -f makes HTTP errors fail loudly
-        // instead of producing an empty .aar.
-        val dl = listOf(
-            "sh", "-c",
-            "mkdir -p '$aarDir' && " +
-                "curl -fSL --retry 3 -o '$aarPath' '$aarUrl' && " +
-                "unzip -l '$aarPath' | tee '$listingPath'"
-        )
-        val proc = ProcessBuilder(dl).redirectErrorStream(true).start()
-        val output = proc.inputStream.bufferedReader().readText()
-        val rc = proc.waitFor()
-        if (rc != 0) {
-            throw GradleException(
-                "downloadSherpaAar: failed (rc=$rc). Output:\n$output"
-            )
-        }
-        // Mark the listing in the build log so the next CI run
-        // makes the on-disk layout unambiguous even if the
-        // PR-comment step is skipped.
-        logger.lifecycle("extractSherpaJniLibs: AAR listing:\n$output")
-    }
-    from(zipTree(aarFile))
-    into(outDir)
-    // The k2-fsa/sherpa-onnx AAR is built with the layout
-    // `jniLibs/<abi>/<libname>.so` (the workflow at
-    // .github/workflows/android.yaml copies the prebuilt
-    // .so files into `android/SherpaOnnxAar/sherpa_onnx/
-    // src/main/jniLibs/<abi>/` and runs `:sherpa_onnx:
-    // assembleRelease`). Some other AARs in the wild use
-    // `jni/<abi>/**` (the older convention AGP used to use
-    // internally) or the legacy `lib/<abi>/**`. Include all
-    // three so the same `extractSherpaJniLibs` works against
-    // any of them. Patterns are OR-ed; if the same file
-    // shows up at multiple paths, the destination is just
-    // overwritten (byte-identical).
-    include("jniLibs/arm64-v8a/**")
-    include("jniLibs/armeabi-v7a/**")
-    include("jni/arm64-v8a/**")
-    include("jni/armeabi-v7a/**")
-    include("lib/arm64-v8a/**")
-    include("lib/armeabi-v7a/**")
+    // Single shell pipeline: wipe the build dir, fetch the
+    // AAR, list its contents, and unzip the three possible
+    // jniLibs layouts (`jniLibs/<abi>/`, `jni/<abi>/`, and
+    // `lib/<abi>/`) into <outDir>. We keep the directory
+    // structure (no `-j`) so the result is laid out as
+    // <outDir>/<jniLibs|jni|lib>/<abi>/<libname>.so, which
+    // matches what AGP expects when <outDir>/<jniLibs|jni|lib>
+    // is registered as a jniLibs srcDir. The final `find` makes
+    // the post-extract layout visible in the CI log.
+    commandLine = listOf(
+        "sh", "-c",
+        "set -e; " +
+            "rm -rf '$aarDir'; " +
+            "mkdir -p '$aarDir'; " +
+            "echo '== downloading AAR =='; " +
+            "curl -fSL --retry 3 -o '$aarPath' '$aarUrl'; " +
+            "echo '== AAR contents =='; " +
+            "unzip -l '$aarPath' | tee '$listingPath'; " +
+            "echo '== extracting jniLibs =='; " +
+            "unzip -o '$aarPath' " +
+            "'jniLibs/arm64-v8a/*' 'jniLibs/armeabi-v7a/*' " +
+            "'jni/arm64-v8a/*' 'jni/armeabi-v7a/*' " +
+            "'lib/arm64-v8a/*' 'lib/armeabi-v7a/*' " +
+            "-d '$aarDir' 2>/dev/null || true; " +
+            "echo '== extracted layout =='; " +
+            "find '$aarDir' -type f | sort"
+    )
 }
 
 // Hand the extracted `<outDir>/{jniLibs,jni,lib}/<abi>/<libname>.so`
