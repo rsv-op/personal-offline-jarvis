@@ -95,7 +95,22 @@ dependencies {
     // `checkDebugDuplicateClasses` (the only check that actually
     // fails) now sees only the JVM jar.
     runtimeOnly("com.github.k2-fsa.sherpa-onnx:sherpa-onnx:1.13.8@aar")
-    implementation("com.github.k2-fsa.sherpa-onnx:sherpa-onnx-jvm:1.13.8")
+    implementation("com.github.k2-fsa.sherpa-onnx:sherpa-onnx-jvm:1.13.8") {
+        // The AAR's classes.jar is registered by AGP as an internal
+        // sub-artifact named `sherpa-onnx-1.13.8-runtime`. Both it
+        // and the JVM jar ship AudioEvent and a handful of other
+        // com.k2fsa.sherpa.onnx.* classes. The AAR's classes.jar is
+        // a subset of the JVM jar and is missing the `Builder` inner
+        // classes the new fluent API uses, so the JVM jar is the
+        // authoritative source. Excluding the AAR's runtime
+        // sub-artifact here drops the AAR's contribution to dex
+        // while keeping the AAR's jniLibs (libsherpa-onnx-jni.so
+        // for arm64-v8a and armeabi-v7a) and packaging metadata
+        // intact (those are on the AAR proper, not on the
+        // -runtime sub-artifact).
+        exclude(group = "com.github.k2-fsa.sherpa-onnx", module = "sherpa-onnx-1.13.8-runtime")
+        exclude(group = "com.github.k2-fsa.sherpa-onnx", module = "sherpa-onnx-runtime")
+    }
     implementation("com.google.ai.edge.litertlm:litertlm-android:0.18.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.6.2")
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.6.2")
