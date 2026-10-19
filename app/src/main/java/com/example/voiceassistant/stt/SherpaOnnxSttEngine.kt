@@ -83,24 +83,13 @@ class SherpaOnnxSttEngine @Inject constructor(
         checkNotNull(decoder) { "sherpa-onnx model is missing decoder-*.onnx in $modelPath" }
         checkNotNull(joiner) { "sherpa-onnx model is missing joiner-*.onnx in $modelPath" }
 
-        // The sherpa-onnx Java config classes each expose a public static
-        // nested Builder with a no-arg constructor. The same classes also
-        // expose a `public static Builder builder()` factory, but Kotlin's
-        // resolution of Java static methods that look like JavaBean
-        // getters (e.g. `ClassName.builder()` returning a Builder) is
-        // inconsistent: the same expression compiles in some Kotlin
-        // versions and fails with `Unresolved reference 'builder'` in
-        // others. The nested-class constructor form
-        // (`OnlineModelConfig.Builder()`) bypasses that and is stable
-        // across Kotlin versions, so we use that here.
-        //
-        // FeatureConfig defaults to sample_rate=16000 and feature_dim=80,
-        // which is exactly the 16 kHz Zipformer configuration we want;
-        // we still set them explicitly so the intent is obvious to a
-        // future reader.
-        val modelConfig = OnlineModelConfig.Builder()
+        // The Java config uses a Builder pattern. FeatureConfig defaults
+        // to sample_rate=16000 and feature_dim=80, which is exactly the
+        // 16 kHz Zipformer configuration we want, so we don't set it
+        // explicitly.
+        val modelConfig = OnlineModelConfig.builder()
             .setTransducer(
-                OnlineTransducerModelConfig.Builder()
+                OnlineTransducerModelConfig.builder()
                     .setEncoder(encoder.absolutePath)
                     .setDecoder(decoder.absolutePath)
                     .setJoiner(joiner.absolutePath)
@@ -115,9 +104,9 @@ class SherpaOnnxSttEngine @Inject constructor(
             .setProvider("cpu")
             .build()
 
-        val config = OnlineRecognizerConfig.Builder()
+        val config = OnlineRecognizerConfig.builder()
             .setFeatureConfig(
-                FeatureConfig.Builder()
+                FeatureConfig.builder()
                     .setSampleRate(SAMPLE_RATE_HZ)
                     .setFeatureDim(80)
                     .build()

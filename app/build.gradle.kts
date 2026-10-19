@@ -43,6 +43,12 @@ android {
         }
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+            // The sherpa-onnx AAR and the sherpa-onnx-jvm jar both
+            // ship a small set of `com.k2fsa.sherpa.onnx.*` classes
+            // (AudioEvent, OnlineRecognizer, OnlineStream, etc.). The
+            // AAR's classes.jar is a subset of the JVM jar, so on
+            // duplicate the JVM-jar copy is the one we want in dex.
+            pickFirsts += "com/k2fsa/sherpa/onnx/**"
         }
     }
 
@@ -88,6 +94,11 @@ dependencies {
     // at runtime. Without the JVM jar the compile fails with
     // `Unresolved reference 'OnlineModelConfig'` (and the same for
     // every other sherpa-onnx class).
+    //
+    // Both artifacts ship a few overlapping `com.k2fsa.sherpa.onnx.*`
+    // classes (AudioEvent is the one Gradle complains about);
+    // `packaging { resources { pickFirsts } }` above resolves that
+    // collision by letting Gradle pick the JVM-jar copy.
     implementation("com.github.k2-fsa.sherpa-onnx:sherpa-onnx:1.13.8@aar")
     implementation("com.github.k2-fsa.sherpa-onnx:sherpa-onnx-jvm:1.13.8")
     implementation("com.google.ai.edge.litertlm:litertlm-android:0.18.0")
