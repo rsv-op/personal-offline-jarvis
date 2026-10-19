@@ -120,26 +120,57 @@ val extractSherpaJniLibs: TaskProvider<Copy> = tasks.register<Copy>("extractSher
         }
         from(zipTree(aarFile))
         into(outDir)
-        // The AAR's jniLibs live under `jni/<abi>/<libname>.so`,
-        // matching the Android library convention. Some prebuilt
-        // sherpa-onnx AARs use the legacy `lib/<abi>/<libname>.so`
-        // layout instead, so we include both. The two patterns are
-        // OR-ed, so the actual on-disk layout determines which
-        // one matches; if both match, the destination is just
-        // overwritten (the .so files are byte-identical).
+        // The k2-fsa/sherpa-onnx AAR is built with the layout
+        // `jniLibs/<abi>/<libname>.so` (the workflow at
+        // .github/workflows/android.yaml copies the prebuilt
+        // .so files into `android/SherpaOnnxAar/sherpa_onnx/
+        // src/main/jniLibs/<abi>/` and runs `:sherpa_onnx:
+        // assembleRelease`). Some other AARs in the wild use
+        // `jni/<abi>/**` (the older convention AGP used to use
+        // internally) or the legacy `lib/<abi>/**`. Include all
+        // three so the same `extractSherpaJniLibs` works against
+        // any of them. Patterns are OR-ed; if the same file
+        // shows up at multiple paths, the destination is just
+        // overwritten (byte-identical).
+        include("jniLibs/arm64-v8a/**")
+        include("jniLibs/armeabi-v7a/**")
         include("jni/arm64-v8a/**")
         include("jni/armeabi-v7a/**")
         include("lib/arm64-v8a/**")
         include("lib/armeabi-v7a/**")
+        // Debug: print every top-level directory and `.so` path
+        // inside the AAR so the next CI log makes the actual
+        // layout unambiguous. Cheap (a single `unzip -l`).
+        doLast {
+            val rgx = "unzip -l ${aarFile.absolutePath}"
+            val proc = ProcessBuilder("sh", "-c", rgx)
+                .redirectErrorStream(true)
+                .start()
+            val listing = proc.inputStream.bufferedReader().readText()
+            proc.waitFor()
+            val interesting = listing.lineSequence()
+                .filter { it.contains("jni") || it.contains("lib/") }
+                .joinToString("\n")
+            logger.lifecycle("extractSherpaJniLibs: AAR contents (filtered):\n$interesting")
+        }
     }
 }
 
-// Hand the extracted `<outDir>/jni` to AGP as if it were a committed
-// `app/src/main/jniLibs/`. The `<outDir>/jni/{arm64-v8a,armeabi-v7a}`
-// subtree is exactly the layout AGP expects, so no further rewriting
-// is required.
-val sherpaJniSrcDir = layout.buildDirectory.dir("sherpa-jni/jni")
-android.sourceSets["main"].jniLibs.srcDirs(sherpaJniSrcDir)
+// Hand the extracted `<outDir>/{jniLibs,jni,lib}/<abi>/<libname>.so`
+// to AGP as if it were committed to `app/src/main/jniLibs/`. The
+// k2-fsa/sherpa-onnx AAR (built via
+// .github/workflows/android.yaml → SherpaOnnxAar) uses the
+// `jniLibs/<abi>/` layout inside the AAR; some other AARs use
+// `jni/<abi>/` or `lib/<abi>/`. We register all three possible
+// extracted subtrees as jniLibs srcDirs, so whatever layout the
+// downloaded AAR actually has, the .so files end up where AGP
+// expects.
+val sherpaJniSrcRoot = layout.buildDirectory.dir("sherpa-jni")
+android.sourceSets["main"].jniLibs.srcDirs(
+    sherpaJniSrcRoot.map { it.dir("jniLibs") },
+    sherpaJniSrcRoot.map { it.dir("jni") },
+    sherpaJniSrcRoot.map { it.dir("lib") },
+)
 
 // Make sure the .so files are extracted before any AGP task that
 // inspects the jniLibs srcDirs (e.g. mergeDebugJniLibs,
