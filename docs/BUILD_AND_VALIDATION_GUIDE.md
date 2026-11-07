@@ -1,16 +1,19 @@
 # JARVIS — Build, Test, and Evaluation Guide
 
-**Status date:** 2026-10-15
+**Status date:** 2026-11-08
 **Scope:** the deterministic offline assistant (rules + on-device intent brain), the encrypted
-memory, optional local replies, and the Android build/CI that produces the installable APK.
+memory, local replies through llama.cpp, the Room-backed chat transcript, and the Android
+build/CI that produces the installable APK.
 
 ## 1. Is it finished?
 
 The agreed implementation scope is complete and build-validated on `main`: supported device
 actions are deterministic and confirmation-gated, speech recognition runs locally through
-Vosk, intent routing combines deterministic rules with an on-device neural classifier plus
-the phrases you teach, memory is encrypted under a hardware-backed key, and CI builds,
-tests and verifies an installable APK and publishes it to the `jarvis-latest` release.
+sherpa-onnx, intent routing combines deterministic rules with an on-device neural classifier
+plus the phrases you teach, memory is encrypted under a hardware-backed key, open-ended
+answers come from a local llama.cpp model you import yourself, the transcript is stored in
+Room, and CI builds, tests and verifies an installable APK and publishes it to the
+`jarvis-latest` release.
 
 That does **not** yet prove the app is production-ready. CI has no microphone, camera/flash,
 alarm-clock app, imported speech model, imported reply model, or device TTS engine, and no
@@ -20,13 +23,15 @@ testing**.
 
 | Area | Current status |
 |---|---|
-| Android compilation, unit tests, debug APK | Passing in CI (12 test classes, 103 tests) |
-| Offline speech recognition (Vosk) | Implemented; needs a user-imported model and a device test |
+| Android compilation, unit tests, debug APK | Passing in CI (24 test classes) |
+| Offline speech recognition (sherpa-onnx) | Implemented; needs a user-imported model and a device test |
 | Intent routing | Deterministic rules first, then the ai-matrix classifier (holdout 0.9286), then taught phrases |
 | Flashlight, alarm, timer actions | Implemented; every device-changing action needs explicit confirmation |
 | Device status (“how much battery is left”) | Implemented; read-only, answered without confirmation |
+| Contact lookup | Implemented; read-only, so it is **not** confirmation-gated |
 | Encrypted memory | Implemented (AES-256-GCM, Android Keystore/StrongBox-backed key) |
-| Open-ended answers | Optional, via a user-imported LiteRT-LM model |
+| Open-ended answers | Implemented, via a user-imported `.gguf` model run on llama.cpp (CPU, arm64) |
+| Chat transcript | Implemented, in Room with WAL journalling; an interrupted reply is recovered on the next launch |
 | Always-on wake word | Not implemented; interaction is push-to-talk |
 | File deletion | Intentionally unavailable; no executor is wired and the manifest requests no file access |
 | Signed release / Play Store readiness | Out of scope; the published APK is a debug build signed with a cached debug key |
@@ -39,16 +44,22 @@ The normal interaction is:
 ```text
 Tap the orb (push-to-talk)
   -> capture 16 kHz mono PCM
-  -> Vosk recognises it locally and emits partial/final text
+  -> sherpa-onnx recognises it locally and emits partial/final text
   -> decision order:
        1. deterministic rules      (flashlight polarity, alarm time, timer duration, status, delete)
        2. the ai-matrix brain      (neural classifier, or a phrase you taught)
-       3. the local reply model    (optional, open-ended questions only)
+       3. the local reply model    (llama.cpp over an imported .gguf; open-ended questions only)
   -> device-changing intent: speak the confirmation prompt, then listen for yes/cancel
        -> Confirm: execute (torch, alarm-clock intent, timer) and log the action
        -> Cancel: nothing happens, the action is logged as cancelled
   -> reply out loud through Android TextToSpeech and show it on screen
+  -> the turn is written to the Room transcript (user message + reply placeholder
+     in one transaction; the placeholder is filled in when the reply completes)
 ```
+
+You can also type into the chat panel instead of speaking. The transcript is observable
+while a reply is still being generated, and a reply that was cut short by the app being
+killed is marked as interrupted on the next launch rather than silently lost.
 
 Speech models and the reply model are provisioned by you and copied into app-private
 storage; neither is bundled in Git or in the APK. The reply model receives no tools, so it
@@ -58,21 +69,23 @@ cannot perform actions — only `UnknownIntent` requests reach it.
 
 | Area | Source | Responsibility |
 |---|---|---|
-| Activity and permissions | `MainActivity.kt` | Runtime microphone/camera permissions, document pickers for model import |
+| Activity and permissions | `MainActivity.kt` | Runtime microphone/camera/notification/contacts permissions, document pickers for model import |
 | Audio capture | `stt/AudioCaptureSource.kt` | 16 kHz mono frames |
-| Speech recognition | `stt/VoskSttEngine.kt`, `stt/OfflineSttIntegrator.kt` | Loads the local Vosk model, streams partial/final events, survives engine failures |
-| Model storage | `stt/VoskModelStore.kt` | Validates and copies an imported `.zip` or folder into private storage |
-| Deterministic routing | `nlp/IntentRouter.kt`, `nlp/TextNormalizer.kt`, `nlp/DurationParser.kt` | Polarity, alarm times, timer durations, status and delete patterns |
+| Speech recognition | `stt/SherpaOnnxSttEngine.kt`, `stt/OfflineSttIntegrator.kt` | Loads the local sherpa-onnx model, streams partial/final events, survives engine failures |
+| Model storage | `stt/SherpaOnnxModelStore.kt`, `stt/ModelArchiveExtractor.kt` | Validates and copies an imported `.zip` or folder into private storage |
+| Deterministic routing | `nlp/IntentRouter.kt`, `nlp/TextNormalizer.kt`, `nlp/DurationParser.kt` | Polarity, alarm times, timer durations, status, contact and delete patterns |
 | Persona-independent intent entry point | `nlp/NlpProcessor.kt` | Merges rules + brain + taught phrases, applies the confirmation threshold |
 | Intent brain | `aimatrix/AiMatrixFeaturizer.kt`, `AiMatrixClassifier.kt`, `OnDeviceBrain.kt` | Hashed character/word features, MLP forward pass, taught-phrase cosine match |
 | Encrypted memory | `vault/VaultCipher.kt`, `vault/SecureVault.kt`, `vault/JarvisMemory.kt` | Keystore AES-256-GCM vault, taught phrases, preferences, action log |
-| Orchestration | `orchestrator/AssistantViewModel.kt` | Voice loop, confirmation gate, execution, generation, memory writes |
+| Orchestration | `orchestrator/AssistantViewModel.kt` | Voice loop, confirmation gate, execution, generation, memory writes, streaming replies |
 | UI state | `statemachine/AssistantUiStateMachine.kt` | Lenient reducer for the visible states (also usable as a standalone state machine) |
-| Device actions | `execution/IntentExecutors.kt`, `execution/ExecutionCoordinator.kt` | Torch, alarm-clock intent, timer, status report |
+| Device actions | `execution/IntentExecutors.kt`, `execution/ContactsExecutor.kt` | Torch, alarm-clock intent, timer, status report, read-only contact lookup |
 | Spoken output | `execution/TtsController.kt` | Wraps Android TextToSpeech (voice comes from the system) |
-| Local replies | `generation/LiteRtLocalTextGenerator.kt`, `generation/LocalGenerationModelStore.kt` | Imports `.litertlm` files and runs short CPU-backed replies |
-| Compose UI | `ui/AssistantScreen.kt` | Orb, status card, teach panel, confirmation card |
-| Tests | `app/src/test/java/com/example/voiceassistant/` | NLP, brain, vault, state machine, view model, Compose screen, STT integrator |
+| Local replies | `generation/llama/` (bridge, generator, store, tier picker, service) | llama.cpp over an imported `.gguf`; model tier picker; foreground service that unloads under memory pressure |
+| Native bridge | `cpp/jarvis_llama.cpp`, `cpp/CMakeLists.txt` | llama.cpp JNI bridge: load/unload, model chat template, raw-byte token callback, cancellation |
+| Chat transcript | `chat/ChatMessageEntity.kt`, `chat/ChatMessageDao.kt`, `chat/ChatDatabase.kt`, `chat/ChatHistoryRepository.kt` | Room with WAL; transactional user message + reply placeholder; interrupted-reply recovery |
+| Compose UI | `ui/AssistantScreen.kt`, `ui/ChatPanel.kt` | Orb, status card, teach panel, confirmation card, chat transcript |
+| Tests | `app/src/test/java/com/example/voiceassistant/` | NLP, brain, vault, state machine, view model, Compose screen, STT integrator, chat DAO, model tier, UTF-8 decoder |
 
 ## 3. Rules and calculations in the current implementation
 
@@ -167,26 +180,62 @@ key means losing the vault contents — that is the design, not a bug.
 
 ### Local reply settings
 
-`LiteRtLocalTextGenerator` runs CPU inference with **4 threads**, a **2,048-token** context,
-`topK = 40`, `topP = 0.9`, `temperature = 0.7`, accepts at most **2,000 characters** of input,
-and caps replies at **192 tokens** and **900 characters**. The system instruction tells the
-model to stay brief and never to claim it performed an action. These are code limits, not
-measured optima; device speed is unknown until benchmarked.
+The local reply model runs on **llama.cpp** (`b12189`) behind a JNI bridge
+(`app/src/main/cpp/jarvis_llama.cpp`). The settings live in `LlamaNative.kt` and
+`LlamaLocalTextGenerator.kt`:
+
+- CPU-only inference, **arm64-v8a only**, mmap-mapped weights, NEON/dotprod kernels.
+  Vulkan is **off** by default (`GGML_VULKAN=OFF`); it can be turned on explicitly.
+- The **chat template comes from the model itself** (`llama_model_chat_template`), so no
+  template is hard-coded in the app and a model with its own template behaves correctly.
+- A fixed random seed (`LLAMA_DEFAULT_SEED`) so a reply is reproducible run to run.
+- Tokens are streamed back as **raw bytes** and reassembled into UTF-8 in Kotlin
+  (`Utf8StreamDecoder.kt`), because a multi-byte character can straddle two token
+  boundaries and decoding each token on its own would corrupt it.
+- A generation can be **cancelled** from the Kotlin side.
+
+**Cold start is 5–15 seconds** for a multi-gigabyte model. That is the honest number: the
+weights have to be mapped and the KV cache allocated before the first token. It is not
+"instant", and no claim in the app or the docs says otherwise.
 
 ### Model import limits
 
-- Vosk archive: ≤ **3,221,225,472 bytes (3 GiB) extracted**, ≤ **5,000 entries**, model root
-  searched to **6 levels**, must contain `conf/model.conf`; archives are extracted with
-  zip-slip protection into private storage. The 3 GiB cap is sized to admit the largest
-  official model (`vosk-model-en-us-0.22-lgraph`, ≈2.3 GB extracted) while still bounding
-  how much of the user data partition a single import can fill.
-- A speech model must be *usable*, not merely present: `conf/model.conf` has to exist with
-  content and the model has to hold at least **1 MiB** of payload. Both the importer and the
-  speech engine check the contents before loading, so an empty or truncated model is refused
-  with the reason (file count and size) instead of failing later at the orb.
-- Reply model: ≤ **4,000,000,000 bytes**, expected `.litertlm`, copied in 64 KiB chunks.
+- Speech model: sherpa-onnx **Streaming Zipformer (English, INT8)** archives, ≤ **3 GiB
+  extracted**, ≤ **5,000 entries**, model root searched to **6 levels**; archives are
+  extracted with zip-slip protection into private storage. A model must be *usable*, not
+  merely present: the importer and the speech engine both check the contents, so an empty
+  or truncated model is refused with the reason instead of failing later at the orb.
+- Reply model: ≤ **4,000,000,000 bytes**, expected `.gguf`, copied in 64 KiB chunks into
+  app-private storage. There is **no downloader**: the file is imported from local storage.
 - These are import-size limits, not compatibility promises: the phone still needs the memory
   and the runtime has to support the file.
+
+### Choosing a model that fits
+
+`ModelTierPicker` sizes the model against the device's **available** RAM, because loading a
+model that is too large does not fail cleanly — the kernel OOM-killer takes the app out, and
+on some phones the whole OS with it.
+
+| Tier | On disk | Parameters | Free RAM needed (2.5× headroom) |
+|---|---|---|---|
+| Tiny | ≤ 1.2 GB | ≈1B, Q4 | ≥ 3.0 GB |
+| Small | ≤ 2.4 GB | ≈3B, Q4 | ≥ 6.0 GB |
+| Medium | ≤ 4.6 GB | ≈7–8B, Q4 | ≥ 11.5 GB |
+
+The **2.5× headroom** is not padding for its own sake: llama.cpp memory-maps the weights
+(the file size is a floor, not a ceiling) and then allocates the KV cache for the context
+window on top of them. 2× proved too tight on the target device — a 2 GB model on 4 GB of
+free RAM still OOM-killed the phone.
+
+### Keeping the model resident without killing the phone
+
+`LlamaModelService` is a foreground service (`specialUse`) that keeps the model loaded so
+the assistant does not pay the 5–15 second cold start on every question. It polls the
+device's available memory every **15 seconds** and **unloads the model** when free memory
+falls below **512 MiB**, updating its notification to say so. The service declares
+`FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_SPECIAL_USE` and `POST_NOTIFICATIONS`; the last
+one is requested at runtime on Android 13+.
+
 
 ## 4. Toolchain and build instructions
 
@@ -227,10 +276,12 @@ gradle --no-daemon :app:testDebugUnitTest :app:assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk   # optional, with a device attached
 ```
 
-The Kotlin suite has **103 tests in 12 classes**, all of which run on the JVM:
+The Kotlin suite has **24 test classes**, all of which run on the JVM:
 
-- `NlpProcessorTest`, `IntentRouterTest`, `DurationParserTest` — routing, polarity, alarm
-  times (including the rejected impossible times), timer durations, brain/taught fallbacks.
+- `NlpProcessorTest`, `IntentRouterTest`, `DurationParserTest`, `ContactIntentRoutingTest` —
+  routing, polarity, alarm times (including the rejected impossible times), timer durations,
+  brain/taught fallbacks, and the read-only contact lookup (which must **not** be
+  confirmation-gated, while the device-changing intents still must be).
 - `AiMatrixFeaturizerTest`, `AiMatrixClassifierTest`, `OnDeviceBrainTest` — features, forward
   pass, asset/version validation, taught-phrase behaviour.
 - `SecureVaultTest`, `JarvisMemoryTest` — encryption round-trips, AAD binding, memory edits.
@@ -238,7 +289,18 @@ The Kotlin suite has **103 tests in 12 classes**, all of which run on the JVM:
   end-to-end voice loop with mocked STT/TTS/executors, including confirm, cancel and the
   follow-up questions.
 - `AssistantScreenTest` — the Compose screen with Robolectric.
-- `OfflineSttIntegratorTest` — partial/final events, empty audio, initialisation failure.
+- `OfflineSttIntegratorTest`, `SherpaOnnxSttEngineTest`, `SherpaOnnxModelValidatorTest`,
+  `ModelArchiveExtractorTest`, `AudioDiagnosticsTest` — partial/final events, empty audio,
+  initialisation failure, model validation and archive extraction.
+- `ChatMessageDaoTest` — the Room transcript: the transactional user-message-plus-placeholder
+  write, completing a reply, observing the transcript oldest-first, and marking interrupted
+  replies on the next launch.
+- `ModelTierPickerTest` — the RAM-based tier arithmetic and the refusal message.
+- `Utf8StreamDecoderTest` — UTF-8 reassembly of raw byte streams, including a multi-byte
+  character split across two token boundaries.
+- `RuleBasedLocalTextGeneratorTest` — the honest no-model fallbacks.
+- `MemoryBudgetTest`, `ProcParsersTest`, `TelematicsTickerTest` — memory headroom and the
+  system-metrics parsers.
 
 Reproduce the Python side (Python 3.10+, NumPy):
 
@@ -268,28 +330,36 @@ publish the APK to the `jarvis-latest` release.
 2. Tap the file and allow installs from your browser when Android asks. The `versionCode` is
    the CI run number, so later builds upgrade in place; a build from a different signing key
    would need the old app uninstalled once.
-3. Open **JARVIS** and grant microphone (speech) and camera (torch) permissions.
-4. Import a speech model: download `vosk-model-small-en-us-0.15.zip` (~40 MB) from
-   <https://alphacephei.com/vosk/models> and use **Import model .zip** — the app unzips and
-   validates it itself. An already-extracted folder also works through **Import model folder**.
-5. Optional: **Import local reply model** with a compatible `.litertlm` file for open-ended
-   questions. Commands work without it; open-ended questions then get a short explanation.
+3. Open **JARVIS** and grant microphone (speech) and camera (torch) permissions. On
+   Android 13+ also grant notifications (the model service uses them) and contacts (only if
+   you want contact lookup).
+4. Import a speech model: download a sherpa-onnx Streaming Zipformer (English, INT8)
+   archive, e.g.
+   `https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-en-2023-06-26.tar.bz2`,
+   and use **Import model .zip** — the app unzips and validates it itself. An
+   already-extracted folder also works through **Import model folder**.
+5. Optional: **Import local reply model** with a `.gguf` file for open-ended questions.
+   The app checks the file against the device's free RAM before loading it and refuses with
+   a concrete message if it is too large. Commands work without it; open-ended questions
+   then get a short explanation. A multi-gigabyte model takes **5–15 seconds** to load the
+   first time.
 6. For spoken replies to stay offline, install/select an **on-device** Android TTS voice
    (Settings → System → Languages & input → Text-to-speech).
 
 Both models live in app-private storage; clearing app data or uninstalling requires importing
 them again. The app requests no `INTERNET` permission, and the only permissions it declares
-are `RECORD_AUDIO`, `CAMERA` and the alarm-clock intent permission.
+are `RECORD_AUDIO`, `CAMERA`, `SET_ALARM`, the foreground-service and notification
+permissions, and `READ_CONTACTS` (read-only, and only used when you ask for a contact).
 
 ## 6. Manual acceptance checklist
 
-Record the phone model, Android version, Vosk model name/version, `.litertlm` identifier, TTS
+Record the phone model, Android version, sherpa-onnx model name/version, `.gguf` identifier, TTS
 voice, and whether the network was disabled.
 
 | Check | Procedure | Expected result |
 |---|---|---|
 | First launch without models | Tap the orb before importing anything | Model status says it is missing; no action is taken |
-| Import speech model | Import the Vosk zip (and an extracted folder on a second run) | Status becomes ready; an invalid archive shows an error and does not replace the installed model |
+| Import speech model | Import the sherpa-onnx archive (and an extracted folder on a second run) | Status becomes ready; an invalid archive shows an error and does not replace the installed model |
 | No speech | Start listening, stay silent, stop | Returns to idle, reports no speech detected |
 | Flashlight cancellation | Say “turn on flashlight”, choose **Cancel** | Prompt appears first; the torch never changes |
 | Flashlight confirmation | Repeat and choose **Confirm**, then try “switch the torch off” | Torch changes only after confirmation; the action log records it |
@@ -298,9 +368,16 @@ voice, and whether the network was disabled.
 | Impossible alarm time | Answer “twelve ninety nine”, then “eleven thirty pm” | The impossible time is refused and asked again; the valid one is offered for confirmation |
 | Timer | Say “set a timer for ten minutes” | Confirms, then starts the timer |
 | Device status | Ask “how much battery is left” | Answered immediately, no confirmation |
+| Contact lookup | Say “what is Priya's number” (with the contacts permission granted) | The number is read out; **no confirmation prompt**, because reading does not change anything |
+| Contact lookup without permission | Deny contacts and ask again | A clear "permission needed" answer; nothing else breaks |
 | Delete request | Say “delete my notes file” | Explained as unavailable; nothing is deleted |
 | Unknown request without a reply model | Ask an open question first | Assistant prompts for a local reply model; no executor runs |
-| Local reply | Import a `.litertlm` and ask an open question | Reply is generated locally and never claims to have changed settings |
+| Local reply | Import a `.gguf` and ask an open question | Reply is generated locally and never claims to have changed settings |
+| Reply model too large | Import a `.gguf` bigger than the device's free RAM | Refused with a message naming the required and available RAM; nothing is loaded |
+| Cold start | Time the first reply after loading a multi-GB model | **5–15 seconds** — this is the expected number, not a bug |
+| Chat transcript | Ask something and open the chat panel | Both the user message and the reply appear, oldest first |
+| Interrupted reply | Kill the app mid-reply, then reopen it | The unfinished reply is marked as interrupted, not left blank or lost |
+| Model unloaded under pressure | Leave the app in the background while memory gets tight | The foreground-service notification says the model was unloaded |
 | Offline check | Disable the network, use imported models and an offline TTS voice | Recognition, actions and speech all still work |
 | Permission/device failures | Deny the microphone, or test a phone with no flash/alarm app | Understandable error, app stays usable, no false success |
 
@@ -329,8 +406,8 @@ errors separate from routing errors so it is clear which stage needs work.
 |---|---|
 | Date and app build (CI run number = versionCode) |  |
 | Device and Android version |  |
-| Vosk speech model |  |
-| Reply model and TTS voice |  |
+| sherpa-onnx speech model |  |
+| Reply model (`.gguf`) and TTS voice |  |
 | Number of test cases |  |
 | WER |  |
 | Intent-route accuracy |  |
@@ -346,7 +423,7 @@ errors separate from routing errors so it is clear which stage needs work.
 2. **Speech and actions:** push-to-talk capture → on-device Vosk → deterministic routing →
    confirmation-gated flashlight/alarm, with TTS and on-screen feedback. Large model files
    stayed out of Git and are imported by the user.
-3. **Optional replies:** open-ended questions can use a user-imported LiteRT-LM model. Only
+3. **Optional replies:** open-ended questions could use a user-imported LiteRT-LM model. Only
    `UnknownIntent` reaches generation, and the model has no device-action tools.
 4. **Learned understanding:** `ai-matrix/` added a trained classifier with a documented
    export format, shipped as a versioned asset and reproduced by Kotlin unit tests; taught
@@ -358,12 +435,26 @@ errors separate from routing errors so it is clear which stage needs work.
    compileSdk/targetSdk 36 for Android 16 while keeping minSdk 26.
 7. **CI hardening:** the workflow installs its own SDK, caches the debug keystore, verifies
    the built APK, republishes failures as annotations, and publishes the installable release.
-8. **Current round:** the unit suite was executed for the first time end to end; that found
-   and fixed real defects (parameterised alarm/timer intents that never reached the
-   confirmation gate, a state machine that dropped intents from a resting state, vault IO
-   pinned to a hard-coded dispatcher, and an STT integrator that could tear down its own
-   scope). Alarm-time validation was tightened so impossible times are refused rather than
-   forwarded.
+8. **The rewrite:** the reply path was replaced with **llama.cpp** behind a JNI bridge
+   (mmap, CPU NEON/dotprod, the model's own chat template, raw-byte token streaming with
+   UTF-8 reassembly in Kotlin). The speech path was replaced with **sherpa-onnx** Streaming
+   Zipformer. A **Room** transcript was added with WAL journalling, a transactional
+   user-message-plus-reply-placeholder write, and recovery of replies interrupted by process
+   death. A **read-only contacts tool** was added, plus a **RAM-based model tier picker** and
+   a **foreground service** that unloads the model under memory pressure. There is still no
+   `INTERNET` permission and still no model downloader: both models are imported from local
+   files.
+9. **Room under KSP:** the Room processor could not run under KAPT with Kotlin 2.4, because
+   Room's KAPT front end reads Kotlin metadata through its own shaded copy of
+   `kotlinx-metadata-jvm`, which is capped below the metadata version Kotlin 2.4.21 emits.
+   Room was moved to the KSP front end, which reads metadata through the Kotlin analysis API
+   instead, and upgraded 2.6.1 → 2.8.5.
+10. **Current round:** the unit suite was executed for the first time end to end; that found
+    and fixed real defects (parameterised alarm/timer intents that never reached the
+    confirmation gate, a state machine that dropped intents from a resting state, vault IO
+    pinned to a hard-coded dispatcher, and an STT integrator that could tear down its own
+    scope). Alarm-time validation was tightened so impossible times are refused rather than
+    forwarded.
 
 ## 9. Remaining work before calling it production-ready
 
@@ -373,13 +464,18 @@ errors separate from routing errors so it is clear which stage needs work.
    and publish the device/model details with the numbers.
 3. Always-on wake word, multilingual speech, and destructive actions are **not** implemented;
    decide whether any of them is a product requirement.
-4. Training currently happens on a laptop. Teaching the phone *new* phrases works offline
+4. Retrieval-augmented generation (RAG), calendar tools and SMS tools are deliberately
+   deferred; none of them is wired up.
+5. Training currently happens on a laptop. Teaching the phone *new* phrases works offline
    (cosine match), but the network weights are not updated on-device.
-5. The packaged APKs cover phone ABIs only, so emulator testing requires building the debug
-   variant with x86 ABIs enabled.
-6. The build still uses Gradle 8.14.6, which CI reports as out of date; a Gradle 9 migration
+6. The packaged APKs cover phone ABIs only, and the llama.cpp bridge is **arm64-v8a only**
+   (32-bit is excluded and Vulkan is off by default), so emulator testing requires building
+   the debug variant with x86 ABIs enabled.
+7. The llama.cpp bridge is compiled from source in CI. A prebuilt library would cut the
+   build time, at the cost of pinning the APK to a llama.cpp release.
+8. The build still uses Gradle 8.14.6, which CI reports as out of date; a Gradle 9 migration
    is a separate, testable change.
-7. The published artifact is a debug-signed APK. A signed release build (own keystore,
+9. The published artifact is a debug-signed APK. A signed release build (own keystore,
    shrinking, Play or sideload distribution) is not part of the current scope.
 
 **Bottom line:** the code, the tests and the CI build are complete for the agreed scope, and

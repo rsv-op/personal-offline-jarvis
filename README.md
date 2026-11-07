@@ -33,19 +33,32 @@ Everything below happens on the phone; you never need a computer.
    permissions (microphone for speech, camera for the flashlight torch, contacts for
    looking up a phone number).
 
-## 2. Give it a voice (one-time, ~40 MB)
+## 2. Give it a voice (one-time)
 
 The speech model is intentionally **not** bundled — it is large and licensed separately.
 
-1. On the phone, open <https://alphacephei.com/vosk/models> and download
-   **`vosk-model-small-en-us-0.15.zip`** (about 40 MB).
-2. In JARVIS tap **Import model .zip** and pick that file. The app unzips it itself
+The app uses **sherpa-onnx** Streaming Zipformer (English, INT8). The model archive is
+published with the sherpa-onnx releases under the `asr-models` tag, for example:
+
+```
+https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-en-2023-06-26.tar.bz2
+```
+
+The full list is at
+<https://k2-fsa.github.io/sherpa/onnx/pretrained_models/online-transducer/zipformer-transducer-models.html>.
+
+1. In JARVIS tap **Import model .zip** and pick the archive. The app unzips it itself
    (Android's Files app cannot), validates it, and copies it into private storage, so
    nothing else on the phone can read it.
    *Already extracted the archive on a computer?* Use **Import model folder** instead.
-   After a good import the status line reports the model size (about **41 MB** for the
-   small English model). A missing or `0 MB` size means the import did not land, and the
-   assistant refuses to listen with an incomplete model rather than failing later.
+   After a good import the status line reports the model size. A missing or `0 MB` size
+   means the import did not land, and the assistant refuses to listen with an incomplete
+   model rather than failing later.
+
+The importer checks that the archive really contains a streaming Zipformer
+(`tokens.txt` plus `encoder-*.onnx`, `decoder-*.onnx` and `joiner-*.onnx`, and at least
+1 MiB of data), so a truncated or unrelated download is refused with a reason instead of
+failing later at the orb.
 
 For spoken replies to stay offline, install an on-device TTS voice in
 **Settings → System → Languages & input → Text-to-speech** and pick an offline voice.
@@ -62,9 +75,9 @@ arrive as a file you pick yourself.
 
 | Model size | Parameters | Free RAM needed (2.5× headroom) |
 | --- | --- | --- |
-| Tiny (~1 GB) | ≈1B, Q4 | ~2.5 GB |
-| Small (~2.4 GB) | ≈3B, Q4 | ~6 GB |
-| Medium (~4.6 GB) | ≈7–8B, Q4 | ~11.5 GB |
+| Tiny (≤1.2 GB) | ≈1B, Q4 | ≥3.0 GB |
+| Small (≤2.4 GB) | ≈3B, Q4 | ≥6.0 GB |
+| Medium (≤4.6 GB) | ≈7–8B, Q4 | ≥11.5 GB |
 
 **Expect a slow first answer.** A multi-gigabyte model takes **5–15 seconds** to load
 the first time; after that the foreground service keeps it resident and replies start

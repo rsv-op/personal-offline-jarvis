@@ -126,6 +126,10 @@ class AssistantViewModelTest {
         doReturn("/model").whenever(mockModelStore).installedModelPath()
         doReturn(40.0).whenever(mockModelStore).installedModelSizeMb()
         doReturn(null).whenever(mockLlamaModelStore).installedModelPath()
+        // The view model mirrors the generator's token stream into the UI, so it
+        // collects `partialReply`. A Mockito mock returns null for an
+        // unstubbed Flow-returning property, and collecting null throws.
+        doReturn(MutableSharedFlow<String>()).whenever(mockLlamaGenerator).partialReply
         // observeMessages() returns a Flow, not a list. It has to be stubbed
         // with the `whenever(...).thenReturn(...)` form: the `doReturn(...)`
         // form would evaluate `flowOf(...)` eagerly and leave the stubbing
