@@ -489,7 +489,7 @@ class AssistantViewModel @Inject constructor(
         val availableMb = memoryBudget.availableMemoryBytes / (1024 * 1024)
         val modelPath = modelStore.installedModelPath()
         val modelSizeMb = modelStore.installedModelSizeMb()
-        val replyModelPath = localGenerationModelStore.installedModelPath()
+        val replyModelPath = llamaModelStore.installedModelPath()
         val stats = audioCaptureSource.stats
         // Read the installed package's version so the pasted diagnosis
         // unambiguously identifies the build on the device. The

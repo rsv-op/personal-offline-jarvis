@@ -94,6 +94,10 @@ class ExecutionCoordinator(
                 intent.durationSeconds?.let(DurationParser::describe) ?: "that duration"
             }?"
         AppIntent.StatusReport -> "Do you want a status report?"
+        // Reading a contact does not change the device, so it is never routed
+        // through the confirmation gate; the branch exists only to keep the
+        // `when` exhaustive.
+        is AppIntent.LookUpContact -> "Looking up ${intent.name}."
         AppIntent.UnknownIntent -> "I didn't quite catch that. Could you repeat?"
     }
 
@@ -103,6 +107,7 @@ class ExecutionCoordinator(
         is AppIntent.ToggleFlashlight -> "Done."
         is AppIntent.SetTimer -> "Timer started."
         AppIntent.StatusReport -> "Here is your status."
+        is AppIntent.LookUpContact -> ""
         AppIntent.UnknownIntent -> ""
     }
 }
