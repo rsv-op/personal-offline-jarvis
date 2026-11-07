@@ -377,7 +377,17 @@ dependencies {
     // Room's compiler runs under kapt here. KSP would be faster, but KSP
     // releases are pinned to an exact Kotlin version and none exists for the
     // Kotlin 2.4.21 this project builds with; kapt works with any of them.
-    kapt("androidx.room:room-compiler:2.6.1")
+    //
+    // `room-compiler-processing` rather than `room-compiler`: the plain
+    // compiler shades an old kotlinx-metadata-jvm that cannot read the 2.4
+    // metadata this project produces, and fails with
+    //   "Provided Metadata instance has version 2.4.0, while maximum
+    //    supported version is 2.0.0"
+    // Because Room uses its OWN shaded copy (androidx.room.jarjarred...),
+    // putting a newer kotlinx-metadata-jvm on the processor classpath does
+    // not help; the processing artifact is the one that understands the
+    // newer metadata.
+    kapt("androidx.room:room-compiler-processing:2.6.1")
 
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.6.2")
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.6.2")
