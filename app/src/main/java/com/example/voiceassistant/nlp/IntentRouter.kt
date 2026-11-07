@@ -28,8 +28,11 @@ class IntentRouter {
             "system status|are you online|what can you do|what model are you|your name|" +
             "how much memory).*"
     )
+    // "what is Priya's number" is a contact lookup, so the possessive form
+    // has to be recognised here too. A bare "number" is deliberately NOT a
+    // trigger: "what is the serial number of the phone" is not a lookup.
     private val contactPattern = Regex(
-        ".*(?:contact|contacts|phone number|number for|call|ring|dial).*"
+        ".*(?:contact|contacts|phone number|number for|'s number|'s phone number|call|ring|dial).*"
     )
 
     private val offWords = listOf("off", "out", "kill", "disable", "stop", "shut", "dark", "dim")

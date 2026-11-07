@@ -6,6 +6,9 @@ plugins {
     id("org.jetbrains.kotlin.kapt")
     id("org.jetbrains.kotlin.plugin.compose")
     id("com.google.dagger.hilt.android")
+    // Room runs under KSP; see the comment in the root build file for why it
+    // cannot run under kapt with Kotlin 2.4.
+    id("com.google.devtools.ksp")
 }
 
 android {
@@ -66,12 +69,6 @@ android {
         // `arguments` above are shared, so the ABI restriction is enforced in
         // the CMakeLists (which fails the build for any other ABI) and
         // mirrored here with `externalNativeBuild` per-ABI arguments.
-        kapt {
-            arguments {
-                arg("room.schemaLocation", "$projectDir/schemas")
-                arg("room.incremental", "true")
-            }
-        }
     }
 
     // The llama.cpp sources are fetched by `fetchLlamaCpp` into the build
@@ -326,6 +323,21 @@ tasks.matching { it.name == "assembleDebug" || it.name == "assembleRelease" }
 tasks.matching { it.name == "testDebugUnitTest" || it.name == "testReleaseUnitTest" }
     .configureEach { dependsOn(extractSherpaJniLibs) }
 
+// Room compiler options.
+//
+// These used to live in a `kapt { arguments { ... } }` block, which is the
+// kapt-specific way of passing processor options. Under KSP the same
+// options are passed through the `ksp { arg(...) }` block instead.
+//
+// `room.schemaLocation` is only meaningful when the schema is exported;
+// ChatDatabase sets exportSchema = false because the transcript has a single
+// version and is rebuilt from scratch. The option is kept so a future schema
+// change can be exported without having to remember the plumbing.
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
+    arg("room.incremental", "true")
+}
+
 dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
@@ -372,22 +384,25 @@ dependencies {
     // Room stores the chat transcript. WAL journalling is enabled in
     // ChatDatabase so the UI can read a half-finished reply without
     // blocking the generator's writes.
-    implementation("androidx.room:room-runtime:2.6.1")
-    implementation("androidx.room:room-ktx:2.6.1")
-    // Room's compiler runs under kapt here. KSP would be faster, but KSP
-    // releases are pinned to an exact Kotlin version and none exists for the
-    // Kotlin 2.4.21 this project builds with; kapt works with any of them.
+    implementation("androidx.room:room-runtime:2.8.5")
+    implementation("androidx.room:room-ktx:2.8.5")
+    // Room's compiler runs under KSP, not kapt.
     //
-    // `room-compiler-processing` rather than `room-compiler`: the plain
-    // compiler shades an old kotlinx-metadata-jvm that cannot read the 2.4
-    // metadata this project produces, and fails with
+    // Room's kapt/JavaAP processor reads Kotlin metadata through its own
+    // shaded copy of kotlinx-metadata-jvm, which is capped below the
+    // metadata version Kotlin 2.4.21 emits, so it dies with
     //   "Provided Metadata instance has version 2.4.0, while maximum
-    //    supported version is 2.0.0"
-    // Because Room uses its OWN shaded copy (androidx.room.jarjarred...),
-    // putting a newer kotlinx-metadata-jvm on the processor classpath does
-    // not help; the processing artifact is the one that understands the
-    // newer metadata.
-    kapt("androidx.room:room-compiler-processing:2.6.1")
+    //    supported version is 2.3.0"
+    // An external kotlin-metadata-jvm on the processor classpath cannot
+    // override the shaded copy. The KSP processor reads metadata through
+    // the Kotlin analysis API instead and handles it fine.
+    //
+    // Only `room-compiler` is declared: it is the processor entry point
+    // that generates `ChatDatabase_Impl`, and it pulls
+    // `room-compiler-processing` in transitively. Declaring the
+    // processing artifact on its own leaves `ChatDatabase_Impl` missing
+    // and the database cannot be opened.
+    ksp("androidx.room:room-compiler:2.8.5")
 
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.6.2")
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.6.2")

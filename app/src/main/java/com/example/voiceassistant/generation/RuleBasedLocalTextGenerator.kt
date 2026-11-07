@@ -76,7 +76,8 @@ internal object ReplyComposer {
             helpTriggers.any { trimmed == it } ->
                 "I can toggle the flashlight, set alarms and timers, report the device status, " +
                     "look up a contact, and remember phrases you teach me. " +
-                    "Open-ended questions work once you import a local GGUF model."
+                    "Open-ended questions work once you import a local reply model " +
+                    "in .gguf format."
             trimmed.endsWith("?") && abilityTriggers.any { trimmed.startsWith(it) } ->
                 "Device actions are handled by the assistant's confirmed controls, not by me. I can only answer with words."
             trimmed.endsWith("?") ->

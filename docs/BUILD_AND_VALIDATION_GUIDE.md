@@ -193,11 +193,31 @@ measured optima; device speed is unknown until benchmarked.
 - **JDK 21** to run the build; app bytecode stays **JVM 17**.
 - **Gradle 8.14.6** (no wrapper is checked in; CI installs this version).
 - Android SDK **Platform 36** with build-tools 36.0.0 (CI installs them with `sdkmanager`).
+- Android NDK **27.2.12479018** and CMake **3.22.1** (CI installs them; the llama.cpp bridge
+  is compiled from source by the external native build).
 - App configuration: **minSdk 26**, **compileSdk/targetSdk 36**, AGP **8.13.0**, Kotlin
-  Android/KAPT/Compose plugins **2.4.21**, Hilt **2.57.2**, LiteRT-LM Android **0.18.0**,
-  Vosk Android **0.3.75**.
+  Android/KAPT/Compose plugins **2.4.21**, KSP **2.3.13**, Hilt **2.57.2**, Room **2.8.5**,
+  sherpa-onnx **1.13.8**.
 - Only phone ABIs are packaged (`arm64-v8a`, `armeabi-v7a`), so the APK does not install on
-  x86 emulators by design.
+  x86 emulators by design. The llama.cpp bridge itself is arm64-v8a only; the 32-bit slice
+  carries the sherpa-onnx speech library only.
+
+### Why Room runs under KSP and not KAPT
+
+Room's annotation processor has two front ends. The KAPT/JavaAP front end reads Kotlin
+metadata through Room's **own shaded copy** of `kotlinx-metadata-jvm`, and that copy is
+capped at a metadata version older than the one Kotlin 2.4.21 emits. The build therefore
+fails during `kaptDebugKotlin` with:
+
+```
+Provided Metadata instance has version 2.4.0, while maximum supported version is 2.3.0
+```
+
+Adding a newer `kotlin-metadata-jvm` to the processor classpath does **not** help: the
+shaded copy is the one that is used, and the external one cannot override it. The KSP front
+end reads metadata through the Kotlin analysis API instead, so it handles Kotlin 2.4
+metadata. Hilt stays on KAPT — Dagger 2.57 un-shaded its metadata dependency, and the
+build declares `kotlin-metadata-jvm:2.4.21` on the KAPT classpath for it.
 
 ```sh
 java -version                                  # JDK 21

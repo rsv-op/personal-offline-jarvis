@@ -126,9 +126,12 @@ class AssistantViewModelTest {
         doReturn("/model").whenever(mockModelStore).installedModelPath()
         doReturn(40.0).whenever(mockModelStore).installedModelSizeMb()
         doReturn(null).whenever(mockLlamaModelStore).installedModelPath()
-        // observeMessages() returns a Flow, not a list.
-        doReturn(flowOf(emptyList<com.example.voiceassistant.chat.ChatMessageEntity>()))
-            .whenever(mockChatHistory.observeMessages())
+        // observeMessages() returns a Flow, not a list. It has to be stubbed
+        // with the `whenever(...).thenReturn(...)` form: the `doReturn(...)`
+        // form would evaluate `flowOf(...)` eagerly and leave the stubbing
+        // unfinished, which Mockito rejects.
+        whenever(mockChatHistory.observeMessages())
+            .thenReturn(flowOf(emptyList<com.example.voiceassistant.chat.ChatMessageEntity>()))
         runBlocking {
             whenever(mockSttEngine.getPartialText()).thenReturn("")
             whenever(mockSttEngine.getFinalText()).thenReturn("")
