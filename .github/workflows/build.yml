@@ -67,6 +67,29 @@ jobs:
           yes | "$TOOL" --licenses > /dev/null 2>&1 || true
           "$TOOL" --install "platforms;android-36" "build-tools;36.0.0" "platform-tools"
 
+      - name: Install the Android NDK and CMake
+        # The local language model runs on llama.cpp, which is compiled from
+        # source by the external native build (app/src/main/cpp/CMakeLists.txt).
+        # That needs the NDK and CMake, neither of which is on the runner image.
+        #
+        # The NDK version is pinned so the native build stays reproducible: a
+        # different NDK can change the CPU feature detection and therefore the
+        # generated kernels.
+        run: |
+          set -eux
+          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          TOOL="$SDK/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$TOOL" ]; then TOOL="$(command -v sdkmanager)"; fi
+          "$TOOL" --install "ndk;27.2.12479018" "cmake;3.22.1"
+
+      - name: Report the native toolchain
+        # Prints the resolved NDK and CMake versions into the log so a native
+        # build failure can be diagnosed from the CI output alone.
+        run: |
+          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          echo "NDK: $(ls "$SDK/ndk" 2>/dev/null || echo none)"
+          echo "CMake: $(ls "$SDK/cmake" 2>/dev/null || echo none)"
+
       - name: Reuse the debug signing key between runs
         # Without this the runner regenerates its debug keystore every build, and a new
         # APK would refuse to install over the previous one (signature mismatch).
@@ -285,6 +308,34 @@ jobs:
                   findings.append(f"lib/{abi}: {len(libs)} .so files")
                   if not libs:
                       problems.append(f"no native libraries for {abi}")
+
+              # The llama.cpp JNI bridge must be present for arm64-v8a. This is
+              # the library the whole on-device language model runs through, so
+              # a missing one means the APK cannot answer open-ended questions.
+              llama_lib = "lib/arm64-v8a/libjarvis_llama.so"
+              if llama_lib in names:
+                  info = archive.getinfo(llama_lib)
+                  findings.append(
+                      f"{llama_lib}: {info.file_size} bytes"
+                  )
+                  if info.file_size < 100_000:
+                      problems.append(
+                          f"{llama_lib} is suspiciously small ({info.file_size} bytes); "
+                          "the llama.cpp bridge did not link its native code"
+                      )
+              else:
+                  problems.append(
+                      f"{llama_lib} is missing; the on-device language model cannot run"
+                  )
+
+              # 32-bit must NOT ship the llama.cpp bridge: its CMake
+              # configuration only builds arm64-v8a, and a stray 32-bit copy
+              # would mean the ABI restriction had been bypassed.
+              if "lib/armeabi-v7a/libjarvis_llama.so" in names:
+                  problems.append(
+                      "lib/armeabi-v7a/libjarvis_llama.so is present; the llama.cpp "
+                      "path is arm64-v8a only"
+                  )
 
           # apksigner labels signers "Signer #1 certificate DN:" on older build-tools and
           # "V2 Signer: certificate DN:" on newer ones, so only the tail is matched.

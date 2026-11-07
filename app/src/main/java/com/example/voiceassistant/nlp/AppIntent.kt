@@ -10,6 +10,14 @@ sealed interface AppIntent {
     /** Reads device facts (battery, storage, brain status). Read-only, so no confirmation. */
     data object StatusReport : AppIntent
 
+    /**
+     * Looks up a contact by name and reports their phone number.
+     *
+     * Read-only: it reads the contacts provider and never writes to it, so it
+     * does not change device state and does not need the confirmation gate.
+     */
+    data class LookUpContact(val name: String) : AppIntent
+
     /** A recognized model for confirmation flows; no file-deletion executor is wired in this app. */
     data class DeleteFile(val fileName: String) : AppIntent
 

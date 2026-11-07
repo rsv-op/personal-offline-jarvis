@@ -78,6 +78,9 @@ fun AssistantApp(
     val intentSource by viewModel.intentSource.collectAsStateWithLifecycle()
     val isImporting by viewModel.isImporting.collectAsStateWithLifecycle()
     val isDiagnosing by viewModel.isDiagnosing.collectAsStateWithLifecycle()
+    val chatMessages by viewModel.chatMessages.collectAsStateWithLifecycle()
+    val streamingReply by viewModel.streamingReply.collectAsStateWithLifecycle()
+    var showChat by remember { mutableStateOf(false) }
 
     MaterialTheme(
         colorScheme = darkColorScheme(
@@ -94,8 +97,31 @@ fun AssistantApp(
                 viewModel = viewModel,
                 onClose = viewModel::closeDiagnostics
             )
+        } else if (showChat) {
+            Box(modifier = Modifier.fillMaxSize().safeDrawingPadding()) {
+                ChatPanel(
+                    messages = chatMessages,
+                    streamingReply = streamingReply,
+                    onSend = { text ->
+                        showChat = false
+                        viewModel.sendChatMessage(text)
+                    },
+                    onClear = viewModel::clearChat,
+                    modifier = Modifier.fillMaxSize()
+                )
+                TextButton(
+                    onClick = { showChat = false },
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(8.dp)
+                        .testTag("chat_back")
+                ) {
+                    Text("Back", color = JarvisCyan)
+                }
+            }
         } else {
-            AssistantScreen(
+            Column {
+                AssistantScreen(
                 uiState = uiState,
                 transcript = transcript,
                 onConfirm = viewModel::confirmAction,
@@ -121,7 +147,17 @@ fun AssistantApp(
                 onTeachLast = viewModel::teachLastUtterance,
                 onForget = viewModel::forgetPhrase,
                 onForgetAll = viewModel::forgetAllPhrases
-            )
+                )
+                TextButton(
+                    onClick = { showChat = true },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp, vertical = 8.dp)
+                        .testTag("open_chat")
+                ) {
+                    Text("Open conversation", color = JarvisCyan)
+                }
+            }
         }
     }
 }

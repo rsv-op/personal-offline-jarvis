@@ -5,15 +5,19 @@ import android.util.Log
 import com.example.voiceassistant.aimatrix.AiMatrixModelStore
 import com.example.voiceassistant.aimatrix.IntentModelSource
 import com.example.voiceassistant.aimatrix.OnDeviceBrain
+import com.example.voiceassistant.chat.ChatDatabase
+import com.example.voiceassistant.chat.ChatMessageDao
 import com.example.voiceassistant.execution.AlarmExecutor
 import com.example.voiceassistant.execution.AssistantStatusProvider
+import com.example.voiceassistant.execution.ContactsExecutor
 import com.example.voiceassistant.execution.FlashlightExecutor
 import com.example.voiceassistant.execution.StatusExecutor
 import com.example.voiceassistant.execution.TimerExecutor
 import com.example.voiceassistant.execution.TtsController
-import com.example.voiceassistant.generation.LiteRtLocalTextGenerator
-import com.example.voiceassistant.generation.LocalGenerationModelStore
 import com.example.voiceassistant.generation.LocalTextGenerator
+import com.example.voiceassistant.generation.llama.LlamaLocalTextGenerator
+import com.example.voiceassistant.generation.llama.LlamaModelService
+import com.example.voiceassistant.generation.llama.LlamaModelStore
 import com.example.voiceassistant.generation.RuleBasedLocalTextGenerator
 import com.example.voiceassistant.nlp.IntentRouter
 import com.example.voiceassistant.nlp.NlpProcessor
@@ -40,6 +44,16 @@ import javax.inject.Singleton
 @Qualifier
 @Retention(AnnotationRetention.BINARY)
 annotation class SpeechDispatcher
+
+/**
+ * Starts the foreground service that keeps the local model resident.
+ *
+ * Injected as an interface so tests can observe that the service was started
+ * without actually starting a foreground service.
+ */
+fun interface LlamaModelServiceStarter {
+    fun start()
+}
 
 @Module
 @InstallIn(SingletonComponent::class)
@@ -72,6 +86,9 @@ object AssistantDiModule {
     fun provideTimerExecutor() = TimerExecutor()
 
     @Provides
+    fun provideContactsExecutor() = ContactsExecutor()
+
+    @Provides
     fun provideStatusExecutor(provider: AssistantStatusProvider) =
         StatusExecutor(assistantStatus = { provider.describe() })
 
@@ -100,6 +117,36 @@ object AssistantDiModule {
     fun provideLocalTextGenerator(
         ruleBased: RuleBasedLocalTextGenerator
     ): LocalTextGenerator = ruleBased
+
+    /**
+     * The chat transcript database.
+     *
+     * Room owns the *transcript* only. Taught phrases and other stored
+     * preferences stay in the encrypted vault, which is protected by an
+     * AES-GCM key held in the device's secure element. Keeping the two apart
+     * means a readable Room file never exposes the user's taught phrases.
+     */
+    @Provides
+    @Singleton
+    fun provideChatDatabase(@ApplicationContext context: Context): ChatDatabase =
+        ChatDatabase.getInstance(context)
+
+    @Provides
+    @Singleton
+    fun provideChatMessageDao(database: ChatDatabase): ChatMessageDao =
+        database.chatMessageDao()
+
+    /**
+     * Starts the foreground service that keeps the llama.cpp model resident.
+     *
+     * The service is only useful once a model is installed, so it is started
+     * on demand rather than at application start.
+     */
+    @Provides
+    @Singleton
+    fun provideLlamaModelServiceStarter(
+        @ApplicationContext context: Context
+    ): LlamaModelServiceStarter = LlamaModelServiceStarter { LlamaModelService.start(context) }
 
     /** The vault key lives in the device's secure element, not in the APK or in a file. */
     @Provides

@@ -6,6 +6,9 @@ plugins {
     id("org.jetbrains.kotlin.kapt")
     id("org.jetbrains.kotlin.plugin.compose")
     id("com.google.dagger.hilt.android")
+    // Room runs under KSP; see the comment in the root build file for why it
+    // cannot run under kapt with Kotlin 2.4.
+    id("com.google.devtools.ksp")
 }
 
 android {
@@ -27,7 +30,53 @@ android {
         ndk {
             // Phones only: this keeps the bundled native speech/LLM libraries at a
             // sane size instead of shipping emulator ABIs nobody will install.
+            //
+            // The llama.cpp path is arm64-v8a only. Its CMake configuration
+            // refuses any other ABI outright, so listing armeabi-v7a here is
+            // fine only because the native build is restricted to arm64 by
+            // `llamaAbiFilters` below.
             abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
+
+        // The native build is driven by app/src/main/cpp/CMakeLists.txt, which
+        // compiles llama.cpp from source and links our JNI bridge against it.
+        externalNativeBuild {
+            cmake {
+                cppFlags += "-std=c++17"
+                arguments += listOf(
+                    "-DANDROID_STL=c++_shared",
+                    "-DLLAMA_BUILD_TESTS=OFF",
+                    "-DLLAMA_BUILD_EXAMPLES=OFF",
+                    "-DLLAMA_BUILD_TOOLS=OFF",
+                    "-DLLAMA_BUILD_SERVER=OFF",
+                    "-DLLAMA_CURL=OFF",
+                    "-DGGML_NATIVE=OFF",
+                    // Vulkan is off by default: on the Adreno generation this
+                    // app targets the CPU NEON/dotprod kernels are usually
+                    // faster than the Vulkan backend.
+                    "-DGGML_VULKAN=OFF",
+                    // KleidiAI supplies the best ARM NEON/dotprod kernels, but
+                    // ggml fetches it from a GitHub release at configure
+                    // time. Set JARVIS_DISABLE_KLEIDIAI=1 to fall back to the
+                    // standard ARM kernels if that download is unavailable.
+                    "-DGGML_CPU_KLEIDIAI=" +
+                        if (System.getenv("JARVIS_DISABLE_KLEIDIAI") == "1") "OFF" else "ON"
+                )
+            }
+        }
+
+        // Only arm64-v8a is built for the llama.cpp path. The `cppFlags` and
+        // `arguments` above are shared, so the ABI restriction is enforced in
+        // the CMakeLists (which fails the build for any other ABI) and
+        // mirrored here with `externalNativeBuild` per-ABI arguments.
+    }
+
+    // The llama.cpp sources are fetched by `fetchLlamaCpp` into the build
+    // directory; the path is handed to CMake as a cache variable.
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
         }
     }
 
@@ -35,16 +84,37 @@ android {
         compose = true
     }
 
+    // The release build is minified; app/proguard-rules.pro keeps the JNI
+    // bridge and the Room implementation alive.
+    buildTypes {
+        getByName("release") {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+        }
+        getByName("debug") {
+            isMinifyEnabled = false
+        }
+    }
+
+    sourceSets {
+        getByName("main") {
+            java.srcDirs("src/main/java")
+        }
+    }
+
     packaging {
         jniLibs {
-            pickFirsts += "**/liblitertlm_jni.so"
-            // The sherpa-onnx `libsherpa-onnx-jni.so` is now pulled
-            // out of the AAR by `extractSherpaJniLibs` and lives at
-            // `app/build/sherpa-jni/jni/<abi>/`. The litertlm AAR also
-            // brings its own JNI libraries; if any of them happen to
-            // share a filename, prefer the litertlm copy (it is what
-            // the rest of the app is built and tested against).
+            // The sherpa-onnx `libsherpa-onnx-jni.so` is pulled out of the AAR
+            // by `extractSherpaJniLibs` and lives at
+            // `app/build/sherpa-jni/jni/<abi>/`.
             pickFirsts += "**/libsherpa-onnx-jni.so"
+            // The llama.cpp bridge is `libjarvis_llama.so`, built from source
+            // by the external native build. Nothing else produces this name.
+            pickFirsts += "**/libjarvis_llama.so"
         }
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
@@ -154,6 +224,80 @@ android.sourceSets["main"].jniLibs.srcDirs(
     sherpaJniSrcRoot.map { it.dir("lib") },
 )
 
+// ---------------------------------------------------------------------------
+// llama.cpp
+// ---------------------------------------------------------------------------
+//
+// The local language model runs on llama.cpp, compiled from source by the
+// external native build (app/src/main/cpp/CMakeLists.txt). The sources are
+// fetched here rather than committed, for the same reason the sherpa-onnx AAR
+// is fetched rather than committed: they are large, versioned upstream, and
+// pinning them to a known-good revision is more honest than carrying a
+// 40 MB copy in the repository.
+//
+// The pinned revision is LLAMA_CPP_TAG. It is a release tag rather than a
+// branch so the build is reproducible: the same tag always yields the same
+// native code.
+
+val llamaCppTag = "b12189"
+val llamaCppArchive = "llama.cpp-${llamaCppTag}.tar.gz"
+val llamaCppUrl =
+    "https://codeload.github.com/ggml-org/llama.cpp/tar.gz/refs/tags/${llamaCppTag}"
+val llamaCppRoot = layout.buildDirectory.dir("llama-cpp")
+val llamaCppSourceDir = llamaCppRoot.map { it.dir("llama.cpp-${llamaCppTag}") }
+
+/**
+ * Downloads and unpacks the pinned llama.cpp release.
+ *
+ * The download is idempotent: if the source tree is already present the task
+ * does nothing, so incremental builds do not re-download 38 MB every time.
+ */
+val fetchLlamaCpp: TaskProvider<Exec> = tasks.register<Exec>("fetchLlamaCpp") {
+    group = "build"
+    description = "Download and unpack the pinned llama.cpp sources for the native build."
+
+    val rootDir = llamaCppRoot.get().asFile.absolutePath
+    val sourceDir = llamaCppSourceDir.get().asFile.absolutePath
+    val archive = File(rootDir, llamaCppArchive)
+    val url = llamaCppUrl
+    val tag = llamaCppTag
+
+    inputs.property("llamaCppTag", tag)
+    outputs.dir(llamaCppSourceDir)
+    // The sources are fetched over the network, so the task can never be
+    // considered up to date by Gradle's own checks.
+    outputs.upToDateWhen { false }
+
+    commandLine = listOf(
+        "sh", "-c",
+        "set -e; " +
+            "mkdir -p '$rootDir'; " +
+            // Already unpacked? Then there is nothing to do.
+            "if [ -f '$sourceDir/include/llama.h' ]; then " +
+            "  echo 'llama.cpp $tag already unpacked'; exit 0; " +
+            "fi; " +
+            "echo '== downloading llama.cpp $tag =='; " +
+            "curl -fSL --retry 3 -o '$archive' '$url'; " +
+            "echo '== unpacking =='; " +
+            "tar xzf '$archive' -C '$rootDir'; " +
+            "rm -f '$archive'; " +
+            "test -f '$sourceDir/include/llama.h' || " +
+            "  { echo 'llama.h missing after unpacking'; exit 1; }; " +
+            "echo '== llama.cpp ready at $sourceDir =='"
+    )
+}
+
+// The native build needs the sources in place before CMake configures.
+tasks.matching { it.name.startsWith("configureCMake") || it.name.startsWith("buildCMake") }
+    .configureEach { dependsOn(fetchLlamaCpp) }
+
+// Hand the unpacked source tree to CMake. `-D` cache variables passed through
+// `arguments` are the supported way to configure an AGP external native build,
+// and the path is resolved lazily so it is correct for both debug and release.
+android.defaultConfig.externalNativeBuild.cmake.arguments += listOf(
+    "-DLLAMA_SRC_DIR=${llamaCppSourceDir.get().asFile.absolutePath}"
+)
+
 // Make sure the .so files are extracted before any AGP task that
 // inspects the jniLibs srcDirs (e.g. mergeDebugJniLibs,
 // packageDebug, the Build workflow's aapt2 dump). Hooking into
@@ -178,6 +322,21 @@ tasks.matching { it.name == "assembleDebug" || it.name == "assembleRelease" }
     .configureEach { dependsOn(extractSherpaJniLibs) }
 tasks.matching { it.name == "testDebugUnitTest" || it.name == "testReleaseUnitTest" }
     .configureEach { dependsOn(extractSherpaJniLibs) }
+
+// Room compiler options.
+//
+// These used to live in a `kapt { arguments { ... } }` block, which is the
+// kapt-specific way of passing processor options. Under KSP the same
+// options are passed through the `ksp { arg(...) }` block instead.
+//
+// `room.schemaLocation` is only meaningful when the schema is exported;
+// ChatDatabase sets exportSchema = false because the transcript has a single
+// version and is rebuilt from scratch. The option is kept so a future schema
+// change can be exported without having to remember the plumbing.
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
+    arg("room.incremental", "true")
+}
 
 dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
@@ -221,7 +380,30 @@ dependencies {
     // The JVM jar is the only contributor of
     // `com.k2fsa.sherpa.onnx.*` types on the classpath.
     implementation("com.github.k2-fsa.sherpa-onnx:sherpa-onnx-jvm:1.13.8")
-    implementation("com.google.ai.edge.litertlm:litertlm-android:0.18.0")
+
+    // Room stores the chat transcript. WAL journalling is enabled in
+    // ChatDatabase so the UI can read a half-finished reply without
+    // blocking the generator's writes.
+    implementation("androidx.room:room-runtime:2.8.5")
+    implementation("androidx.room:room-ktx:2.8.5")
+    // Room's compiler runs under KSP, not kapt.
+    //
+    // Room's kapt/JavaAP processor reads Kotlin metadata through its own
+    // shaded copy of kotlinx-metadata-jvm, which is capped below the
+    // metadata version Kotlin 2.4.21 emits, so it dies with
+    //   "Provided Metadata instance has version 2.4.0, while maximum
+    //    supported version is 2.3.0"
+    // An external kotlin-metadata-jvm on the processor classpath cannot
+    // override the shaded copy. The KSP processor reads metadata through
+    // the Kotlin analysis API instead and handles it fine.
+    //
+    // Only `room-compiler` is declared: it is the processor entry point
+    // that generates `ChatDatabase_Impl`, and it pulls
+    // `room-compiler-processing` in transitively. Declaring the
+    // processing artifact on its own leaves `ChatDatabase_Impl` missing
+    // and the database cannot be opened.
+    ksp("androidx.room:room-compiler:2.8.5")
+
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.6.2")
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.6.2")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.6.2")
@@ -246,6 +428,10 @@ dependencies {
     testImplementation("org.mockito:mockito-core:5.5.0")
     testImplementation("org.mockito.kotlin:mockito-kotlin:5.1.0")
     testImplementation("org.robolectric:robolectric:4.11.1")
+    // ApplicationProvider gives the Robolectric tests an application context
+    // for the in-memory Room database.
+    testImplementation("androidx.test:core:1.5.0")
+    testImplementation("androidx.test.ext:junit:1.1.5")
     testImplementation("androidx.compose.ui:ui-test-junit4")
     // Real org.json implementation for plain JVM unit tests (the Android one is a stub).
     testImplementation("org.json:json:20240303")

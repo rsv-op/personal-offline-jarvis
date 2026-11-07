@@ -45,10 +45,10 @@ class MemoryBudgetTest {
     }
 
     @Test
-    fun `the sherpa-onnx headroom is more generous than LiteRT`() {
+    fun `the sherpa-onnx headroom is more generous than llama cpp`() {
         val available = mb(3_500)
         val model = mb(2_000)
-        // 2.5× headroom (LiteRT): needs 5000 MB → refuse.
+        // 2.5× headroom (llama.cpp): needs 5000 MB → refuse.
         assertNotNull(refusalReason(available, model, headroomMultiplier = 2.5))
         // 1.5× headroom (sherpa-onnx): needs 3000 MB → allow.
         assertNull(refusalReason(available, model, headroomMultiplier = 1.5))
@@ -68,7 +68,7 @@ class MemoryBudgetTest {
 
     @Test
     fun `the 584 MB int4 model is allowed on 4 GB free RAM`() {
-        // The recommended LiteRT model is ~584 MB. 2× headroom = 1.17 GB; 4 GB available → fine.
+        // The recommended llama.cpp model is ~584 MB. 2× headroom = 1.17 GB; 4 GB available → fine.
         val available = mb(4_000)
         val model = mb(584)
         assertNull(refusalReason(available, model))

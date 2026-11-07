@@ -15,7 +15,7 @@ trains its model, and the CI that produces an installable APK.
 │   ├── JARVIS_Build_Test_Evaluation_Guide.docx   generated Word copy
 │   └── tools/build_guide_docx.py        regenerates the Word copy from the markdown
 ├── .gitignore
-├── build.gradle.kts                     AGP 8.13.0, Kotlin 2.4.21, Hilt, Compose
+├── build.gradle.kts                     AGP 8.13.0, Kotlin 2.4.21, KSP, Hilt, Compose
 ├── settings.gradle.kts
 ├── gradle.properties
 │
@@ -37,11 +37,18 @@ trains its model, and the CI that produces an installable APK.
 │       └── test_export.py
 │
 └── app/
-    ├── build.gradle.kts                 compileSdk/targetSdk 36, phone ABIs, pytest deps
+    ├── build.gradle.kts                 compileSdk/targetSdk 36, phone ABIs, CMake +
+    │                                    Room (under KSP), pytest deps
+    ├── proguard-rules.pro               keeps the JNI bridge and the Room implementation
     └── src
         ├── main
-        │   ├── AndroidManifest.xml      no INTERNET permission; <queries> for alarms/timers
+        │   ├── AndroidManifest.xml      no INTERNET permission; foreground service,
+        │   │                            contacts + notification permissions
         │   ├── assets/ai_matrix_model.json     trained weights (~655 KiB)
+        │   ├── cpp/
+        │   │   ├── CMakeLists.txt               llama.cpp build + the JNI bridge
+        │   │   └── jarvis_llama.cpp             JNI: load/unload, chat template,
+        │   │                                    raw-byte token callback, cancellation
         │   ├── java/com/example/voiceassistant
         │   │   ├── MainActivity.kt             permission + model picker entry points
         │   │   ├── VoiceAssistantApplication.kt
@@ -50,15 +57,29 @@ trains its model, and the CI that produces an installable APK.
         │   │   │   ├── AiMatrixClassifier.kt   MLP forward pass + JSON reader
         │   │   │   ├── AiMatrixModelStore.kt   loads the asset (IntentModelSource)
         │   │   │   └── OnDeviceBrain.kt        taught phrases, then the network
+        │   │   ├── chat/
+        │   │   │   ├── ChatMessageEntity.kt    one transcript row
+        │   │   │   ├── ChatMessageDao.kt       queries + the transactional beginTurn
+        │   │   │   ├── ChatDatabase.kt         Room database, WAL journalling
+        │   │   │   └── ChatHistoryRepository.kt turns, completion, recovery
         │   │   ├── execution/
         │   │   │   ├── AssistantStatusProvider.kt  "what can you do" from real state
+        │   │   │   ├── ContactsExecutor.kt     read-only contact lookup
         │   │   │   ├── ExecutionCoordinator.kt
         │   │   │   ├── IntentExecutors.kt      flashlight, alarm, timer, status
         │   │   │   └── TtsController.kt        Android TextToSpeech + progress events
         │   │   ├── generation/
-        │   │   │   ├── LiteRtLocalTextGenerator.kt   optional open-ended replies
-        │   │   │   ├── LocalGenerationModelStore.kt  .litertlm import
-        │   │   │   └── LocalTextGenerator.kt
+        │   │   │   ├── LocalTextGenerator.kt          the two-method seam
+        │   │   │   ├── RuleBasedLocalTextGenerator.kt llama routing + honest fallback
+        │   │   │   └── llama/
+        │   │   │       ├── LlamaNative.kt             JNI declarations + token sink
+        │   │   │       ├── LlamaLocalTextGenerator.kt  the llama.cpp backend
+        │   │   │       ├── LlamaModelStore.kt          .gguf import + copy
+        │   │   │       ├── LlamaModelService.kt        foreground service, unload
+        │   │   │       │                              under memory pressure
+        │   │   │       ├── ModelTierPicker.kt          RAM-based model size tiers
+        │   │   │       └── Utf8StreamDecoder.kt        raw bytes → UTF-8 text
+        │   │   ├── memory/MemoryBudget.kt        pure memory-headroom helper
         │   │   ├── nlp/
         │   │   │   ├── AppIntent.kt            intents + changesDeviceState
         │   │   │   ├── DurationParser.kt       "half an hour" → 1800
@@ -66,16 +87,19 @@ trains its model, and the CI that produces an installable APK.
         │   │   │   ├── NlpProcessor.kt         rules → brain, confirmation gating
         │   │   │   └── TextNormalizer.kt       shared filler list
         │   │   ├── orchestrator/
-        │   │   │   ├── AssistantDiModule.kt    Hilt graph (vault, brain, dispatchers)
-        │   │   │   └── AssistantViewModel.kt   the voice loop
+        │   │   │   ├── AssistantDiModule.kt    Hilt graph (vault, brain, dispatchers,
+        │   │   │   │                            Room, llama, contacts)
+        │   │   │   └── AssistantViewModel.kt   the voice loop, chat state
         │   │   ├── statemachine/AssistantUiStateMachine.kt
         │   │   ├── stt/
         │   │   │   ├── AudioCaptureSource.kt   16 kHz mono frames
         │   │   │   ├── OfflineSttIntegrator.kt engine ↔ frames driver
         │   │   │   ├── SttEngine.kt, SttEvent.kt
-        │   │   │   ├── VoskModelStore.kt       folder or .zip import (zip-slip safe)
-        │   │   │   └── VoskSttEngine.kt
+        │   │   │   ├── SherpaOnnxModelStore.kt  folder or .zip import (zip-slip safe)
+        │   │   │   ├── SherpaOnnxModelValidator.kt
+        │   │   │   └── SherpaOnnxSttEngine.kt
         │   │   ├── ui/AssistantScreen.kt       orb, confirmation card, teach panel
+        │   │   ├── ui/ChatPanel.kt            the chat transcript
         │   │   └── vault/
         │   │       ├── JarvisMemory.kt         taught phrases, preferences, action log
         │   │       ├── SecureVault.kt          encrypted document store
@@ -83,15 +107,17 @@ trains its model, and the CI that produces an installable APK.
         │   └── res/                            adaptive icon, dark theme, strings
         └── test/java/com/example/voiceassistant
             ├── TestFiles.kt                    repository-relative test fixtures
-            ├── aimatrix/AiMatrixFeaturizerTest.kt    Python↔Kotlin parity
-            ├── aimatrix/AiMatrixClassifierTest.kt    the shipped model's behaviour
-            ├── aimatrix/OnDeviceBrainTest.kt         taught phrases vs the network
-            ├── nlp/DurationParserTest.kt
-            ├── nlp/IntentRouterTest.kt
-            ├── nlp/NlpProcessorTest.kt
+            ├── aimatrix/                       Python↔Kotlin parity, taught phrases
+            ├── chat/ChatMessageDaoTest.kt      the Room transcript
+            ├── generation/
+            │   ├── RuleBasedLocalTextGeneratorTest.kt
+            │   └── llama/ModelTierPickerTest.kt, llama/Utf8StreamDecoderTest.kt
+            ├── memory/MemoryBudgetTest.kt
+            ├── nlp/                           routing, durations, contacts
             ├── orchestrator/AssistantViewModelTest.kt  voice loop, confirmation gate
             ├── statemachine/AssistantUiStateMachineTest.kt
-            ├── stt/OfflineSttIntegratorTest.kt
+            ├── stt/                           sherpa-onnx engine, validator, extractor
+            ├── telematics/                    system-metrics parsers
             ├── ui/AssistantScreenTest.kt
             └── vault/SecureVaultTest.kt, vault/JarvisMemoryTest.kt
 ```
@@ -99,13 +125,18 @@ trains its model, and the CI that produces an installable APK.
 ## Data flow
 
 1. `AudioCaptureSource` emits 16 kHz mono `ShortArray` frames.
-2. `OfflineSttIntegrator` feeds them to `VoskSttEngine` and emits partial/final text.
+2. `OfflineSttIntegrator` feeds them to `SherpaOnnxSttEngine` and emits partial/final text.
 3. `AssistantViewModel` runs `NlpProcessor`: `IntentRouter` rules first, then
    `OnDeviceBrain` (taught phrases from the vault, then the bundled ai-matrix network).
 4. Anything that changes device state waits in `NeedsConfirmation` for a tap or a spoken
-   "yes"; `DeleteFile` has no executor on purpose.
+   "yes"; `DeleteFile` has no executor on purpose. A contact lookup changes nothing, so it
+   is answered without a confirmation.
 5. Executors perform the action, `TtsController` speaks the result, and `JarvisMemory`
    appends the outcome to the encrypted action log.
+6. A conversational turn is written to the Room transcript: the user's message and a
+   pending reply placeholder in one transaction, then the placeholder is filled in with
+   the finished reply. A reply that is still pending on the next launch was interrupted by
+   a process death and is marked as such.
 
 ## Generated files
 

@@ -12,8 +12,12 @@ import com.example.voiceassistant.execution.StatusExecutor
 import com.example.voiceassistant.execution.TimerExecutor
 import com.example.voiceassistant.execution.TtsController
 import com.example.voiceassistant.execution.TtsEvent
-import com.example.voiceassistant.generation.LocalGenerationModelStore
+import com.example.voiceassistant.chat.ChatHistoryRepository
+import com.example.voiceassistant.chat.ChatMessageDao
+import com.example.voiceassistant.execution.ContactsExecutor
 import com.example.voiceassistant.generation.LocalTextGenerator
+import com.example.voiceassistant.generation.llama.LlamaLocalTextGenerator
+import com.example.voiceassistant.generation.llama.LlamaModelStore
 import com.example.voiceassistant.nlp.AppIntent
 import com.example.voiceassistant.nlp.NlpProcessor
 import com.example.voiceassistant.statemachine.AssistantUiState
@@ -29,6 +33,7 @@ import androidx.lifecycle.ViewModelStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestDispatcher
@@ -72,7 +77,9 @@ class AssistantViewModelTest {
     private lateinit var mockSttEngine: SttEngine
     private lateinit var mockModelStore: SherpaOnnxModelStore
     private lateinit var mockLocalTextGenerator: LocalTextGenerator
-    private lateinit var mockLocalGenerationModelStore: LocalGenerationModelStore
+    private lateinit var mockLlamaModelStore: LlamaModelStore
+    private lateinit var mockLlamaGenerator: LlamaLocalTextGenerator
+    private lateinit var mockChatHistory: ChatHistoryRepository
     private lateinit var mockMemoryBudget: com.example.voiceassistant.memory.DeviceMemory
     private lateinit var mockSystemMetricsCollector:
         com.example.voiceassistant.telematics.SystemMetricsCollector
@@ -104,7 +111,9 @@ class AssistantViewModelTest {
         mockSttEngine = mock()
         mockModelStore = mock()
         mockLocalTextGenerator = mock()
-        mockLocalGenerationModelStore = mock()
+        mockLlamaModelStore = mock()
+        mockLlamaGenerator = mock()
+        mockChatHistory = mock()
         // The view model only reads totalMemoryBytes/availableMemoryBytes from this, and
         // the existing test surface never inspects them, so a plain Mockito mock is fine.
         mockMemoryBudget = mock()
@@ -116,7 +125,17 @@ class AssistantViewModelTest {
         doReturn(MutableSharedFlow<TtsEvent>()).whenever(mockTtsController).events
         doReturn("/model").whenever(mockModelStore).installedModelPath()
         doReturn(40.0).whenever(mockModelStore).installedModelSizeMb()
-        doReturn(null).whenever(mockLocalGenerationModelStore).installedModelPath()
+        doReturn(null).whenever(mockLlamaModelStore).installedModelPath()
+        // The view model mirrors the generator's token stream into the UI, so it
+        // collects `partialReply`. A Mockito mock returns null for an
+        // unstubbed Flow-returning property, and collecting null throws.
+        doReturn(MutableSharedFlow<String>()).whenever(mockLlamaGenerator).partialReply
+        // observeMessages() returns a Flow, not a list. It has to be stubbed
+        // with the `whenever(...).thenReturn(...)` form: the `doReturn(...)`
+        // form would evaluate `flowOf(...)` eagerly and leave the stubbing
+        // unfinished, which Mockito rejects.
+        whenever(mockChatHistory.observeMessages())
+            .thenReturn(flowOf(emptyList<com.example.voiceassistant.chat.ChatMessageEntity>()))
         runBlocking {
             whenever(mockSttEngine.getPartialText()).thenReturn("")
             whenever(mockSttEngine.getFinalText()).thenReturn("")
@@ -158,7 +177,11 @@ class AssistantViewModelTest {
             audioCaptureSource = mockAudioCaptureSource,
             modelStore = mockModelStore,
             localTextGenerator = mockLocalTextGenerator,
-            localGenerationModelStore = mockLocalGenerationModelStore,
+            contactsExecutor = ContactsExecutor(),
+            llamaModelStore = mockLlamaModelStore,
+            llamaGenerator = mockLlamaGenerator,
+            chatHistory = mockChatHistory,
+            llamaModelServiceStarter = { },
             brain = brain,
             memory = memory,
             memoryBudget = mockMemoryBudget,
@@ -191,7 +214,7 @@ class AssistantViewModelTest {
     fun `unknown request still calls the reply generator even without a model`() = runTest(dispatcher) {
         // No model installed: the generator itself returns a rule-based acknowledgement, so
         // the user hears a real reply instead of a pre-empt.
-        whenever(mockLocalGenerationModelStore.installedModelPath()).thenReturn(null)
+        whenever(mockLlamaModelStore.installedModelPath()).thenReturn(null)
         whenever(mockLocalTextGenerator.generateReply(any())).thenReturn("rule-based reply")
 
         val parsed = NlpProcessor().process("what is the capital of France")
