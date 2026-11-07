@@ -17,10 +17,10 @@ interface DeviceMemory {
     /**
      * Returns `null` if a model of [modelBytes] can be loaded right now, otherwise a
      * reason that names both the threshold and what was actually available. The Vosk
-     * path uses [headroomMultiplier] of 1.5; the LiteRT path uses 2.5.
+     * path uses [headroomMultiplier] of 1.5; the llama.cpp path uses 2.5.
      *
      * The 2.5× figure is intentionally tighter than the 2× the user's crash
-     * suggests the math needs: the on-disk size is a lower bound, and LiteRT
+     * suggests the math needs: the on-disk size is a lower bound, and llama.cpp
      * memory-maps the model and then allocates KV cache and a context window
      * on top of it. A 2 GB model on 4 GB free RAM still OOM-kills the device.
      */
@@ -61,7 +61,7 @@ interface DeviceMemory {
  * OOM-killing the process, and on the phones we target that has been observed to
  * take down the whole OS. So the budget is "free RAM must comfortably exceed what
  * the model will need at runtime", with a 1.5× headroom for the Vosk path and 2×
- * for the LiteRT path (LiteRT memory-maps the model and then allocates KV cache
+ * for the llama.cpp path (llama.cpp memory-maps the model and then allocates KV cache
  * for the context window on top of it).
  */
 @Singleton

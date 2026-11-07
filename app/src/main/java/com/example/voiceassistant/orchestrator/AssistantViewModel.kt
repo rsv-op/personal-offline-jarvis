@@ -5,15 +5,20 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.voiceassistant.aimatrix.OnDeviceBrain
+import com.example.voiceassistant.chat.ChatHistoryRepository
+import com.example.voiceassistant.chat.ChatMessageEntity
 import com.example.voiceassistant.execution.AlarmExecutor
 import com.example.voiceassistant.execution.AssistantStatusProvider
+import com.example.voiceassistant.execution.ContactsExecutor
 import com.example.voiceassistant.execution.FlashlightExecutor
 import com.example.voiceassistant.execution.StatusExecutor
 import com.example.voiceassistant.execution.TimerExecutor
 import com.example.voiceassistant.execution.TtsController
 import com.example.voiceassistant.execution.TtsEvent
-import com.example.voiceassistant.generation.LocalGenerationModelStore
 import com.example.voiceassistant.generation.LocalTextGenerator
+import com.example.voiceassistant.generation.llama.LlamaLocalTextGenerator
+import com.example.voiceassistant.generation.llama.LlamaModelStore
+import com.example.voiceassistant.generation.llama.ModelTierPicker
 import com.example.voiceassistant.nlp.AppIntent
 import com.example.voiceassistant.nlp.NlpProcessor
 import com.example.voiceassistant.nlp.TextNormalizer
@@ -33,10 +38,12 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.UUID
@@ -65,13 +72,17 @@ class AssistantViewModel @Inject constructor(
     private val alarmExecutor: AlarmExecutor,
     private val timerExecutor: TimerExecutor,
     private val statusExecutor: StatusExecutor,
+    private val contactsExecutor: ContactsExecutor,
     val assistantStatusProvider: AssistantStatusProvider,
     private val nlpProcessor: NlpProcessor,
     sttEngine: SttEngine,
     private val audioCaptureSource: AudioCaptureSource,
     private val modelStore: SherpaOnnxModelStore,
     private val localTextGenerator: LocalTextGenerator,
-    private val localGenerationModelStore: LocalGenerationModelStore,
+    private val llamaModelStore: LlamaModelStore,
+    private val llamaGenerator: LlamaLocalTextGenerator,
+    private val chatHistory: ChatHistoryRepository,
+    private val llamaModelServiceStarter: LlamaModelServiceStarter,
     private val brain: OnDeviceBrain,
     private val memory: JarvisMemory,
     val memoryBudget: com.example.voiceassistant.memory.DeviceMemory,
@@ -127,6 +138,26 @@ class AssistantViewModel @Inject constructor(
     private val _isDiagnosing = MutableStateFlow(false)
     val isDiagnosing: StateFlow<Boolean> = _isDiagnosing.asStateFlow()
 
+    /** The persisted chat transcript, oldest first. */
+    val chatMessages: StateFlow<List<ChatMessageEntity>> =
+        chatHistory.observeMessages().stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5_000),
+            emptyList()
+        )
+
+    /**
+     * The reply as it is being generated, so the chat can show it arriving
+     * token by token rather than all at once at the end.
+     *
+     * This is deliberately a separate StateFlow rather than the generator's
+     * replaying SharedFlow: the stream keeps the last value it replayed, so
+     * the finished answer would otherwise sit on screen next to the
+     * completed message.
+     */
+    private val _streamingReply = MutableStateFlow("")
+    val streamingReply: StateFlow<String> = _streamingReply.asStateFlow()
+
     /**
      * Live telematics stream. The collector reads device memory, CPU, battery, thermal
      * status, and process info on every tick of the 1 Hz ticker; the screen consumes
@@ -168,11 +199,14 @@ class AssistantViewModel @Inject constructor(
     /** The size of the installed sherpa-onnx model in MB, or null if no model is installed. */
     val diagnosticModelSizeMb: Double? get() = modelStore.installedModelSizeMb()
 
-    /** The current LiteRT-LM reply model path, or null if no model is installed. */
-    val diagnosticReplyModelPath: String? get() = localGenerationModelStore.installedModelPath()
+    /** The current llama.cpp reply model path, or null if no model is installed. */
+    val diagnosticReplyModelPath: String? get() = llamaModelStore.installedModelPath()
 
     /** The size of the installed reply model in MB, or null if no model is installed. */
-    val diagnosticReplyModelSizeMb: Double? get() = localGenerationModelStore.installedModelSizeMb()
+    val diagnosticReplyModelSizeMb: Double? get() = llamaModelStore.installedModelSizeMb()
+
+    /** The llama.cpp version the native library was built from. */
+    val diagnosticLlamaVersion: String get() = llamaGenerator.backendVersion
 
     private var pendingIntent: AppIntent? = null
     private var awaitingAlarmTime = false
@@ -191,10 +225,59 @@ class AssistantViewModel @Inject constructor(
     init {
         viewModelScope.launch { refreshStatuses() }
         viewModelScope.launch {
+            // A reply that is still pending can only have been cut short by the
+            // process being killed. Mark it so the transcript does not keep a
+            // blank bubble.
+            val recovered = runCatching { chatHistory.recoverInterruptedReplies() }.getOrDefault(0)
+            if (recovered > 0) {
+                _statusMessage.value = "Recovered $recovered interrupted repl" +
+                    if (recovered == 1) "y." else "ies."
+            }
+        }
+        viewModelScope.launch {
             audioCaptureSource.errors.collect { error ->
                 _statusMessage.value = error.message ?: "Microphone capture failed"
                 fullReset()
             }
+        }
+        // Mirror the generator's token stream into the UI, clearing it once
+        // the reply has been written to the transcript.
+        viewModelScope.launch {
+            llamaGenerator.partialReply.collect { text ->
+                _streamingReply.value = text
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ chat
+
+    /**
+     * Sends a typed message: records it in the transcript, generates a reply
+     * and speaks it.
+     */
+    fun sendChatMessage(text: String) {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return
+        viewModelScope.launch {
+            try {
+                val reply = chatHistory.runTurn(trimmed)
+                speakAndSettle(reply)
+            } catch (error: Exception) {
+                _statusMessage.value = error.message ?: "The reply could not be generated"
+            } finally {
+                // The finished reply is now in the transcript, so the
+                // streaming bubble is no longer needed.
+                _streamingReply.value = ""
+                machine.processEvent(AssistantEvent.OnCleanupComplete)
+            }
+        }
+    }
+
+    /** Clears the chat transcript. */
+    fun clearChat() {
+        viewModelScope.launch {
+            runCatching { chatHistory.clear() }
+                .onFailure { _statusMessage.value = "Could not clear the conversation" }
         }
     }
 
@@ -209,10 +292,10 @@ class AssistantViewModel @Inject constructor(
             "Offline speech model ready"
         }
         _modelSizeMb.value = modelStore.installedModelSizeMb()
-        _replyModelStatus.value = if (localGenerationModelStore.installedModelPath() == null) {
+        _replyModelStatus.value = if (llamaModelStore.installedModelPath() == null) {
             "Local reply model not installed (open-ended answers use the built-in replies)"
         } else {
-            "Local reply model ready"
+            "Local reply model ready (llama.cpp ${llamaGenerator.backendVersion})"
         }
         _vaultStatus.value = runCatching {
             val summary = memory.summary()
@@ -254,8 +337,12 @@ class AssistantViewModel @Inject constructor(
         viewModelScope.launch {
             _statusMessage.value = "Importing the reply model…"
             try {
-                localGenerationModelStore.importModel(uri)
+                // The model arrives as a GGUF file the user picked locally.
+                // There is no downloader and no network access of any kind.
+                llamaModelStore.importModel(uri)
                 localTextGenerator.onModelUpdated()
+                // Keep the model resident now that there is one worth keeping.
+                runCatching { llamaModelServiceStarter.start() }
                 _statusMessage.value = "Reply model installed for open-ended questions."
             } catch (error: Exception) {
                 _statusMessage.value = error.message ?: "Could not import the selected reply model"
@@ -265,6 +352,14 @@ class AssistantViewModel @Inject constructor(
             }
         }
     }
+
+    /**
+     * A recommendation for which model size this device can realistically run.
+     */
+    fun modelRecommendation(): String = ModelTierPicker.recommendation(
+        availableBytes = memoryBudget.availableMemoryBytes,
+        totalBytes = memoryBudget.totalMemoryBytes
+    )
 
     // ------------------------------------------------------------ listening
 
@@ -627,6 +722,7 @@ class AssistantViewModel @Inject constructor(
                 is AppIntent.SetTimer -> timerExecutor.execute(context, intent)
                 // Object literals do not smart-cast the subject, so name the singleton.
                 AppIntent.StatusReport -> statusExecutor.execute(context, AppIntent.StatusReport)
+                is AppIntent.LookUpContact -> contactsExecutor.execute(context, intent)
                 is AppIntent.DeleteFile ->
                     "File deletion is not available in this build, so nothing was deleted."
                 AppIntent.UnknownIntent -> "I didn't catch that."
@@ -658,10 +754,12 @@ class AssistantViewModel @Inject constructor(
                 machine.processEvent(AssistantEvent.OnCleanupComplete)
                 return@launch
             }
-            if (localGenerationModelStore.installedModelPath() == null) {
+            if (llamaModelStore.installedModelPath() == null) {
                 _statusMessage.value = "Replying with the built-in fallback (no reply model installed)…"
             } else {
-                _statusMessage.value = "Thinking with the on-device model…"
+                // Loading a multi-GB model takes 5–15 seconds the first time.
+                // Say so plainly rather than implying an instant answer.
+                _statusMessage.value = "Thinking with the on-device model (first load can take 5–15 seconds)…"
             }
             val reply = try {
                 localTextGenerator.generateReply(userText)
@@ -673,6 +771,7 @@ class AssistantViewModel @Inject constructor(
             // speakAndSettle always ends in ReturnToIdle, so the loop can never get stuck
             // in Speaking if the synthesis engine reports nothing.
             speakAndSettle(reply)
+            _streamingReply.value = ""
             machine.processEvent(AssistantEvent.OnCleanupComplete)
         }
     }
@@ -753,6 +852,7 @@ class AssistantViewModel @Inject constructor(
         is AppIntent.ToggleFlashlight ->
             "Do you want to turn the flashlight ${if (intent.isOn) "on" else "off"}?"
         AppIntent.StatusReport -> "Do you want a device status report?"
+        is AppIntent.LookUpContact -> "Looking up ${intent.name}."
         AppIntent.UnknownIntent -> "I didn't catch that."
     }
 

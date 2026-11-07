@@ -40,6 +40,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** The GGUF reply model. Restricted to `.gguf` so the picker shows models only. */
     private val replyModelPicker = registerForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
@@ -61,14 +62,24 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         requestPermissionLauncher.launch(
-            arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA)
+            arrayOf(
+                Manifest.permission.RECORD_AUDIO,
+                Manifest.permission.CAMERA,
+                // POST_NOTIFICATIONS is a runtime permission from Android 13.
+                // The foreground service can run without it, but then the
+                // user would not see the persistent notification.
+                Manifest.permission.POST_NOTIFICATIONS,
+                // The contacts tool is read-only and refuses to run without
+                // this, so the user is asked once at startup.
+                Manifest.permission.READ_CONTACTS
+            )
         )
         setContent {
             AssistantApp(
                 viewModel = viewModel,
                 onInstallModel = { modelFolderPicker.launch(null) },
                 onInstallArchive = { modelArchivePicker.launch(arrayOf("application/zip", "*/*")) },
-                onInstallReplyModel = { replyModelPicker.launch(arrayOf("*/*")) }
+                onInstallReplyModel = { replyModelPicker.launch(arrayOf("application/octet-stream", "*/*")) }
             )
         }
     }

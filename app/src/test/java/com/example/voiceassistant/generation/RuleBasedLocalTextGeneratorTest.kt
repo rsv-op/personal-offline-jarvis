@@ -1,5 +1,7 @@
 package com.example.voiceassistant.generation
 
+import com.example.voiceassistant.generation.llama.LlamaLocalTextGenerator
+import com.example.voiceassistant.generation.llama.LlamaModelStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -9,26 +11,21 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
-import org.junit.Rule
 import org.junit.Test
-import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
 import org.mockito.junit.MockitoJUnitRunner
 import org.mockito.kotlin.any
-import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.never
 import org.mockito.kotlin.verify
 import org.mockito.kotlin.whenever
-import java.io.File
 
 /**
  * Pure-JVM tests for [RuleBasedLocalTextGenerator]. The generator must:
  *
- *  - delegate to the LiteRT engine when a model is installed, so the upgrade path is unchanged,
+ *  - delegate to the llama.cpp engine when a GGUF model is installed,
  *  - otherwise produce a short, deterministic, *honest* reply that says what it can and can't do,
  *  - never claim to have taken a device action.
  */
@@ -36,17 +33,14 @@ import java.io.File
 @RunWith(MockitoJUnitRunner::class)
 class RuleBasedLocalTextGeneratorTest {
 
-    @get:Rule
-    val temporaryFolder = TemporaryFolder()
-
-    private val modelStore: LocalGenerationModelStore = mock()
-    private val liteRt: LiteRtLocalTextGenerator = mock()
+    private val modelStore: LlamaModelStore = mock()
+    private val llama: LlamaLocalTextGenerator = mock()
     private lateinit var generator: RuleBasedLocalTextGenerator
 
     @Before
     fun setUp() {
         Dispatchers.setMain(UnconfinedTestDispatcher())
-        generator = RuleBasedLocalTextGenerator(modelStore, providerOf(liteRt))
+        generator = RuleBasedLocalTextGenerator(modelStore, providerOf(llama))
     }
 
     @After
@@ -55,14 +49,14 @@ class RuleBasedLocalTextGeneratorTest {
     }
 
     @Test
-    fun `delegates to the LiteRT generator when a model is installed`() = runTest {
-        whenever(modelStore.installedModelPath()).thenReturn("/data/local/lm/model.litertlm")
-        whenever(liteRt.generateReply(any())).thenReturn("from the on-device model")
+    fun `delegates to the llama generator when a model is installed`() = runTest {
+        whenever(modelStore.installedModelPath()).thenReturn("/data/local/lm/model.gguf")
+        whenever(llama.generateReply(any())).thenReturn("from the on-device model")
 
         val reply = generator.generateReply("what time is it?")
 
         assertEquals("from the on-device model", reply)
-        verify(liteRt).generateReply("what time is it?")
+        verify(llama).generateReply("what time is it?")
     }
 
     @Test
@@ -70,7 +64,7 @@ class RuleBasedLocalTextGeneratorTest {
         noModel()
         val reply = generator.generateReply("hello")
         assertEquals("Hello. I am ready when you are.", reply)
-        verify(liteRt, never()).generateReply(any())
+        verify(llama, never()).generateReply(any())
     }
 
     @Test
@@ -88,6 +82,7 @@ class RuleBasedLocalTextGeneratorTest {
         assertTrue(reply, reply.contains("flashlight"))
         assertTrue(reply, reply.contains("alarm"))
         assertTrue(reply, reply.contains("timer"))
+        assertTrue(reply, reply.contains("contact"))
         assertTrue(reply, reply.contains("local reply model"))
     }
 
@@ -96,7 +91,7 @@ class RuleBasedLocalTextGeneratorTest {
         noModel()
         val reply = generator.generateReply("Why is the sky blue?")
         assertTrue(reply, reply.contains("local reply model"))
-        assertTrue(reply, reply.contains(".litertlm"))
+        assertTrue(reply, reply.contains(".gguf"))
     }
 
     @Test
@@ -132,7 +127,7 @@ class RuleBasedLocalTextGeneratorTest {
             val reply = generator.generateReply(blank)
             assertEquals("I didn't catch that. Please try again.", reply)
         }
-        verify(liteRt, never()).generateReply(any())
+        verify(llama, never()).generateReply(any())
     }
 
     @Test
@@ -144,9 +139,9 @@ class RuleBasedLocalTextGeneratorTest {
     }
 
     @Test
-    fun `onModelUpdated is delegated to the LiteRT engine`() = runTest {
+    fun `onModelUpdated is delegated to the llama engine`() = runTest {
         generator.onModelUpdated()
-        verify(liteRt).onModelUpdated()
+        verify(llama).onModelUpdated()
     }
 
     @Test
@@ -159,6 +154,7 @@ class RuleBasedLocalTextGeneratorTest {
         whenever(modelStore.installedModelPath()).thenReturn(null)
     }
 
-    private fun providerOf(delegate: LiteRtLocalTextGenerator): javax.inject.Provider<LiteRtLocalTextGenerator> =
-        javax.inject.Provider { delegate }
+    private fun providerOf(
+        delegate: LlamaLocalTextGenerator
+    ): javax.inject.Provider<LlamaLocalTextGenerator> = javax.inject.Provider { delegate }
 }

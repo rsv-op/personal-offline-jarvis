@@ -4,12 +4,27 @@
 
     <!--
       There is deliberately no android.permission.INTERNET here: the assistant cannot
-      reach the network even if it wanted to. Speech recognition, the intent brain and
-      the vault all run on this device.
+      reach the network even if it wanted to. Speech recognition, the intent brain,
+      the local language model and the vault all run on this device.
+
+      Local models are imported from files the user picks in the system file
+      picker; there is no in-app downloader and no network code of any kind.
     -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
+
+    <!--
+      The foreground service keeps the local language model resident so the
+      assistant does not pay the 5-15 second cold start on every question.
+      It unloads the model again when the device runs short of memory.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Read-only: used to look up a contact's phone number. Never written to. -->
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
 
     <uses-feature
         android:name="android.hardware.camera"
@@ -52,5 +67,20 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!--
+          Keeps the llama.cpp model resident while the assistant is in use.
+          `specialUse` is the correct type: the service does not fit any of the
+          predefined categories (it is not media playback, location, data sync
+          and so on) — it exists purely to hold an on-device model in memory.
+        -->
+        <service
+            android:name=".generation.llama.LlamaModelService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keeps the on-device language model resident so replies do not pay a 5-15 second cold start." />
+        </service>
     </application>
 </manifest>

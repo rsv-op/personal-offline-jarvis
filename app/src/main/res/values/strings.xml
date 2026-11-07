@@ -1,4 +1,17 @@
 <resources>
     <string name="app_name">JARVIS</string>
     <string name="assistant_description">Private, fully offline voice assistant</string>
+
+    <!-- Foreground service that keeps the on-device model resident. -->
+    <string name="model_service_channel_name">Local model</string>
+    <string name="model_service_channel_description">Keeps the on-device language model loaded so replies are instant.</string>
+    <string name="model_service_notification">Keeping the local model loaded</string>
+    <string name="model_service_unloaded">Local model unloaded to free memory</string>
+
+    <!-- Chat transcript. -->
+    <string name="chat_title">Conversation</string>
+    <string name="chat_input_hint">Ask JARVIS something…</string>
+    <string name="chat_send">Send</string>
+    <string name="chat_empty">Your conversation will appear here.</string>
+    <string name="chat_clear">Clear</string>
 </resources>

@@ -28,6 +28,9 @@ class IntentRouter {
             "system status|are you online|what can you do|what model are you|your name|" +
             "how much memory).*"
     )
+    private val contactPattern = Regex(
+        ".*(?:contact|contacts|phone number|number for|call|ring|dial).*"
+    )
 
     private val offWords = listOf("off", "out", "kill", "disable", "stop", "shut", "dark", "dim")
     private val onWords = listOf("on", "enable", "start", "bright", "light up", "power up")
@@ -45,6 +48,21 @@ class IntentRouter {
     private val deleteVerbs = setOf(
         "delete", "erase", "remove", "wipe", "throw", "away", "get", "rid", "of", "trash"
     )
+
+    /**
+     * Words that look like a contact name but identify nobody. A request
+     * containing only these cannot be routed to the contacts tool.
+     */
+    private val nonNames = setOf(
+        "me", "my", "him", "her", "them", "us", "it", "someone", "somebody", "anyone",
+        "contact", "contacts", "the", "a", "an", "that", "this", "there"
+    )
+
+    /**
+     * Words that carry no meaning for a name and are ignored when deciding
+     * whether a phrase identifies somebody.
+     */
+    private val fillerWords = setOf("of", "for", "please", "and", "on", "in", "is", "the")
 
     private val timeMap = linkedMapOf(
         "forty five" to "45",
@@ -101,7 +119,72 @@ class IntentRouter {
             )
         }
 
+        if (text.matches(contactPattern)) {
+            val contactName = extractContactName(text)
+            if (contactName != null) {
+                return Evaluation(
+                    intent = AppIntent.LookUpContact(contactName),
+                    confidence = 0.85f,
+                    sensitivity = IntentSensitivity.LOW
+                )
+            }
+        }
+
         return Evaluation(AppIntent.UnknownIntent, 0.0f, IntentSensitivity.LOW)
+    }
+
+    /**
+     * Pulls the person's name out of a contact lookup request.
+     *
+     * "what's Priya's number" -> "Priya"; "look up a contact called John Smith"
+     * -> "John Smith"; "call mom" -> "mom" (which is how the contact is
+     * probably saved).
+     */
+    fun extractContactName(text: String): String? {
+        val lower = text.lowercase()
+
+        val calledIndex = lower.indexOf("called")
+        if (calledIndex >= 0) {
+            val rest = text.substring(calledIndex + "called".length).trim()
+            if (rest.isNotEmpty()) return rest.trim('.').trim()
+        }
+
+        // "'s number" / "'s phone number" -> take the possessive name.
+        val possessive = Regex("([A-Za-z][A-Za-z'\\-]*)'s\\s+(?:phone\\s+)?number").find(text)
+        if (possessive != null) return possessive.groupValues[1]
+
+        val forIndex = lower.indexOf("number for")
+        if (forIndex >= 0) {
+            val rest = text.substring(forIndex + "number for".length).trim()
+            if (rest.isNotEmpty()) return rest.trim('.').trim()
+        }
+
+        // "look up <name>" / "find <name>" / "call <name>" / "dial <name>"
+        val verb = Regex("(?:look up|lookup|find|call|ring|dial)\\s+(?:a\\s+contact\\s+)?(.+)")
+            .find(text)
+        if (verb != null) {
+            var name = verb.groupValues[1].trim().trim('.')
+            if (name.startsWith("contact ", ignoreCase = true)) {
+                name = name.substring("contact ".length).trim()
+            }
+            // A bare pronoun or determiner is not a name: "call my contact"
+            // does not identify anybody, so the request cannot be routed.
+            if (name.isNotEmpty() && !isNonName(name)) return name
+        }
+
+        return null
+    }
+
+    /**
+     * True when [name] identifies nobody — it is made up only of pronouns,
+     * determiners and the word "contact" itself.
+     */
+    private fun isNonName(name: String): Boolean {
+        val words = name.lowercase().split(' ', '.', ',')
+            .filter { it.isNotBlank() }
+            .filterNot { it in fillerWords }
+        if (words.isEmpty()) return true
+        return words.all { it in nonNames }
     }
 
     /** `true` = turn on, `false` = turn off, `null` = the utterance does not say. */

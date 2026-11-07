@@ -244,7 +244,7 @@ private fun DiagnoseTab(
                     style = MaterialTheme.typography.bodyMedium
                 )
                 if (replyModelSizeMb != null) {
-                    // Same 2.5× factor LiteRtLocalTextGenerator uses for its import
+                    // Same 2.5× factor ModelTierPicker uses for the llama.cpp import
                     // refusal check, so this row mirrors the real load decision.
                     val requiredMb = (replyModelSizeMb * 2.5).toInt()
                     val safe = availableMemoryMb >= requiredMb
