@@ -51,7 +51,7 @@ class RuleBasedLocalTextGeneratorTest {
     @Test
     fun `delegates to the llama generator when a model is installed`() = runTest {
         whenever(modelStore.installedModelPath()).thenReturn("/data/local/lm/model.gguf")
-        whenever(llama.generateReply(any())).thenReturn("from the on-device model")
+        whenever(llama.generateReply(any<String>())).thenReturn("from the on-device model")
 
         val reply = generator.generateReply("what time is it?")
 
@@ -64,7 +64,7 @@ class RuleBasedLocalTextGeneratorTest {
         noModel()
         val reply = generator.generateReply("hello")
         assertEquals("Hello. I am ready when you are.", reply)
-        verify(llama, never()).generateReply(any())
+        verify(llama, never()).generateReply(any<String>())
     }
 
     @Test
@@ -127,7 +127,7 @@ class RuleBasedLocalTextGeneratorTest {
             val reply = generator.generateReply(blank)
             assertEquals("I didn't catch that. Please try again.", reply)
         }
-        verify(llama, never()).generateReply(any())
+        verify(llama, never()).generateReply(any<String>())
     }
 
     @Test

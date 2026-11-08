@@ -234,7 +234,7 @@ class AssistantViewModelTest {
         // No model installed: the generator itself returns a rule-based acknowledgement, so
         // the user hears a real reply instead of a pre-empt.
         whenever(mockLlamaModelStore.installedModelPath()).thenReturn(null)
-        whenever(mockLocalTextGenerator.generateReply(any())).thenReturn("rule-based reply")
+        whenever(mockLocalTextGenerator.generateReply(any<String>())).thenReturn("rule-based reply")
 
         val parsed = NlpProcessor().process("what is the capital of France")
         viewModel.onIntentParsed(parsed, "what is the capital of France")
