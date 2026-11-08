@@ -13,9 +13,13 @@ import com.example.voiceassistant.execution.ContactsExecutor
 import com.example.voiceassistant.execution.FlashlightExecutor
 import com.example.voiceassistant.execution.StatusExecutor
 import com.example.voiceassistant.execution.TimerExecutor
+import com.example.voiceassistant.core.Capability
+import com.example.voiceassistant.core.DecisionLog
 import com.example.voiceassistant.execution.TtsController
 import com.example.voiceassistant.execution.TtsEvent
 import com.example.voiceassistant.generation.LocalTextGenerator
+import com.example.voiceassistant.generation.RagPrompt
+import com.example.voiceassistant.generation.RagPromptComposer
 import com.example.voiceassistant.generation.llama.LlamaLocalTextGenerator
 import com.example.voiceassistant.generation.llama.LlamaModelStore
 import com.example.voiceassistant.generation.llama.ModelTierPicker
@@ -31,7 +35,15 @@ import com.example.voiceassistant.memory.DeviceMemory
 import com.example.voiceassistant.stt.OfflineSttIntegrator
 import com.example.voiceassistant.stt.SttEngine
 import com.example.voiceassistant.stt.SherpaOnnxModelStore
+import com.example.voiceassistant.rag.RagChunker
+import com.example.voiceassistant.rag.RagContext
+import com.example.voiceassistant.rag.RagIngestor
+import com.example.voiceassistant.rag.RagQuery
+import com.example.voiceassistant.rag.RagSourceSummary
 import com.example.voiceassistant.stt.SttEvent
+import com.example.voiceassistant.wake.ContinuousWakeController
+import com.example.voiceassistant.wake.WakeSessionGate
+import com.example.voiceassistant.wake.WakeState
 import com.example.voiceassistant.vault.JarvisMemory
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -87,6 +99,10 @@ class AssistantViewModel @Inject constructor(
     private val memory: JarvisMemory,
     val memoryBudget: com.example.voiceassistant.memory.DeviceMemory,
     private val systemMetricsCollector: com.example.voiceassistant.telematics.SystemMetricsCollector,
+    /** The SAF ingestion pipeline for the local knowledge base. */
+    private val ragIngestor: RagIngestor,
+    /** The hash-chained ADR log and the capability gate in front of every subsystem. */
+    private val decisionLog: DecisionLog,
     /** Injected (never defaulted) so Dagger sees a single, fully-specified constructor. */
     @SpeechDispatcher private val speechDispatcher: kotlinx.coroutines.CoroutineDispatcher
 ) : ViewModel() {
@@ -124,6 +140,50 @@ class AssistantViewModel @Inject constructor(
 
     private val _statusMessage = MutableStateFlow("")
     val statusMessage: StateFlow<String> = _statusMessage.asStateFlow()
+
+    // ------------------------------------------------------------ knowledge base
+
+    private val _ragStatus = MutableStateFlow("No documents indexed")
+    val ragStatus: StateFlow<String> = _ragStatus.asStateFlow()
+
+    private val _ragSources = MutableStateFlow<List<RagSourceSummary>>(emptyList())
+    val ragSources: StateFlow<List<RagSourceSummary>> = _ragSources.asStateFlow()
+
+    private val _ragLastIngest = MutableStateFlow("")
+    val ragLastIngest: StateFlow<String> = _ragLastIngest.asStateFlow()
+
+    private val _ragBusy = MutableStateFlow(false)
+    val ragBusy: StateFlow<Boolean> = _ragBusy.asStateFlow()
+
+    /** When false the assistant answers from general knowledge only. */
+    private val _ragEnabled = MutableStateFlow(true)
+    val ragEnabled: StateFlow<Boolean> = _ragEnabled.asStateFlow()
+
+    /** Optional exact-match target, e.g. `notes.md page 2`. */
+    private val _ragTargetFilter = MutableStateFlow("")
+    val ragTargetFilter: StateFlow<String> = _ragTargetFilter.asStateFlow()
+
+    /** The sources quoted in the most recent answer, shown under it in the chat. */
+    private val _ragLastSources = MutableStateFlow<List<String>>(emptyList())
+    val ragLastSources: StateFlow<List<String>> = _ragLastSources.asStateFlow()
+
+    // ------------------------------------------------------------ wake word
+
+    /** Where the hands-free loop is: off, standby (waiting for "heretic"), armed, busy. */
+    private val _wakeState = MutableStateFlow(WakeState.OFF)
+    val wakeState: StateFlow<WakeState> = _wakeState.asStateFlow()
+
+    /** True while the microphone is held open by the hands-free loop. */
+    private val _handsFreeActive = MutableStateFlow(false)
+    val handsFreeActive: StateFlow<Boolean> = _handsFreeActive.asStateFlow()
+
+    /** When false, unprompted speech runs a command without the wake word. */
+    private val _wakeWordRequired = MutableStateFlow(true)
+    val wakeWordRequired: StateFlow<Boolean> = _wakeWordRequired.asStateFlow()
+
+    /** How long the wake window stays open, for the live countdown in the UI. */
+    private val _wakeWindowMs = MutableStateFlow(0L)
+    val wakeWindowMs: StateFlow<Long> = _wakeWindowMs.asStateFlow()
 
     private val _confirmationPrompt = MutableStateFlow("")
     val confirmationPrompt: StateFlow<String> = _confirmationPrompt.asStateFlow()
@@ -208,6 +268,13 @@ class AssistantViewModel @Inject constructor(
     /** The llama.cpp version the native library was built from. */
     val diagnosticLlamaVersion: String get() = llamaGenerator.backendVersion
 
+    /**
+     * Set by the `"shaz"` interrupt and consumed by the next generation failure, so a
+     * deliberately stopped answer is not reported to the user as an error.
+     */
+    @Volatile
+    private var interruptedByUser = false
+
     private var pendingIntent: AppIntent? = null
     private var awaitingAlarmTime = false
     private var awaitingTimerDuration = false
@@ -222,8 +289,80 @@ class AssistantViewModel @Inject constructor(
         dispatcher = speechDispatcher
     )
 
+    /**
+     * The hands-free wake loop.
+     *
+     * It is created eagerly but only starts a microphone session on demand, so a phone that
+     * never enables hands-free never opens the microphone in the background. The gate is the
+     * same object the controller consults, which is what keeps "is the window open?" a single
+     * piece of truth instead of two flags that can disagree.
+     */
+    private val wakeGate = WakeSessionGate()
+
+    private val wakeController = ContinuousWakeController(
+        capture = audioCaptureSource,
+        integrator = sttIntegrator,
+        gate = wakeGate,
+        scope = viewModelScope,
+    )
+
+    private val wakeCallbacks = object : ContinuousWakeController.Callbacks {
+        override fun onWakeAcknowledged() {
+            viewModelScope.launch {
+                _statusMessage.value = "Wake word heard — the command window is open, go ahead."
+                runCatching {
+                    decisionLog.note(
+                        Capability.MIC_CAPTURE,
+                        "wake",
+                        "heretic",
+                        "A wake word opened the command window, which is the only way unprefixed speech is accepted.",
+                    )
+                }
+                speakAndSettle("Yes?")
+            }
+        }
+
+        override fun onCommand(command: String, wokeNow: Boolean) {
+            viewModelScope.launch {
+                _partialTranscript.value = command
+                _lastUtterance.value = command
+                if (wokeNow) {
+                    _statusMessage.value = "Command from the wake word: \"$command\""
+                }
+                if (uiState.value !is AssistantUiState.Listening) {
+                    machine.processEvent(AssistantEvent.OnWakeWordDetected)
+                }
+                machine.processEvent(AssistantEvent.OnSpeechEnded)
+                handleUtterance(command)
+            }
+        }
+
+        override fun onInterrupt() {
+            interruptNow(fromWakeWord = true)
+        }
+
+        override fun onIgnoredAmbient(text: String) {
+            _statusMessage.value = "Ignored room speech (say \"Heretic\" first): $text"
+        }
+
+        override fun onPartial(text: String) {
+            _partialTranscript.value = text
+        }
+
+        override fun onProblem(message: String) {
+            _statusMessage.value = message
+            _handsFreeActive.value = false
+        }
+    }
+
     init {
         viewModelScope.launch { refreshStatuses() }
+        viewModelScope.launch {
+            // Put the user's documents back before anything can ask a question. The
+            // snapshot is one small JSON file, so this is a few milliseconds; it is on
+            // its own coroutine anyway so a slow disk cannot delay the first frame.
+            restoreKnowledgeBase()
+        }
         viewModelScope.launch {
             // A reply that is still pending can only have been cut short by the
             // process being killed. Mark it so the transcript does not keep a
@@ -260,7 +399,10 @@ class AssistantViewModel @Inject constructor(
         if (trimmed.isEmpty()) return
         viewModelScope.launch {
             try {
-                val reply = chatHistory.runTurn(trimmed)
+                // Typed questions get the same retrieval treatment as spoken ones: the
+                // knowledge base does not care how the question arrived.
+                val context = retrieveContext(trimmed)
+                val reply = chatHistory.runTurn(trimmed, context)
                 speakAndSettle(reply)
             } catch (error: Exception) {
                 _statusMessage.value = error.message ?: "The reply could not be generated"
@@ -533,37 +675,50 @@ class AssistantViewModel @Inject constructor(
 
     private fun dispatchSttEvent(event: SttEvent) {
         when (event) {
-            is SttEvent.OnPartialResult -> viewModelScope.launch {
-                _partialTranscript.value = event.text
+            is SttEvent.OnPartialResult -> {
+                if (_handsFreeActive.value) {
+                    wakeController.onPartialHypothesis(event.text)
+                } else {
+                    viewModelScope.launch { _partialTranscript.value = event.text }
+                }
             }
 
-            is SttEvent.OnFinalResult -> viewModelScope.launch {
-                audioCaptureSource.stop()
-                sttIntegrator.stopTranscription(emitFinalResult = false)
-                if (uiState.value is AssistantUiState.Listening) {
-                    machine.processEvent(AssistantEvent.OnSpeechEnded)
+            is SttEvent.OnFinalResult -> {
+                // The hands-free loop owns its own session: stopping the capture here would
+                // silently end standby after the first command, which is the opposite of
+                // "continuous". Its transcripts go through the wake gate instead.
+                if (_handsFreeActive.value) {
+                    viewModelScope.launch { wakeController.onFinalTranscript(event.text) }
+                    return
                 }
-                _partialTranscript.value = event.text
-                _lastUtterance.value = event.text
-
-                if (awaitingConfirmationAnswer) {
-                    awaitingConfirmationAnswer = false
-                    handleConfirmationAnswer(event.text)
-                    return@launch
-                }
-
-                val requestText = when {
-                    awaitingAlarmTime -> {
-                        awaitingAlarmTime = false
-                        "set alarm for ${event.text}"
+                viewModelScope.launch {
+                    audioCaptureSource.stop()
+                    sttIntegrator.stopTranscription(emitFinalResult = false)
+                    if (uiState.value is AssistantUiState.Listening) {
+                        machine.processEvent(AssistantEvent.OnSpeechEnded)
                     }
-                    awaitingTimerDuration -> {
-                        awaitingTimerDuration = false
-                        "set a timer for ${event.text}"
+                    _partialTranscript.value = event.text
+                    _lastUtterance.value = event.text
+
+                    if (awaitingConfirmationAnswer) {
+                        awaitingConfirmationAnswer = false
+                        handleConfirmationAnswer(event.text)
+                        return@launch
                     }
-                    else -> event.text
+
+                    val requestText = when {
+                        awaitingAlarmTime -> {
+                            awaitingAlarmTime = false
+                            "set alarm for ${event.text}"
+                        }
+                        awaitingTimerDuration -> {
+                            awaitingTimerDuration = false
+                            "set a timer for ${event.text}"
+                        }
+                        else -> event.text
+                    }
+                    processUtterance(requestText, event.text)
                 }
-                processUtterance(requestText, event.text)
             }
 
             SttEvent.OnEmptyAcoustic -> viewModelScope.launch {
@@ -610,6 +765,392 @@ class AssistantViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    /**
+     * Routes one recognised utterance, whichever path produced it (orb, wake word, chat).
+     *
+     * The order is the safety model: a stop word is obeyed before anything else, the
+     * deterministic intent router gets the first say, and only an unclaimed request is
+     * answered from the knowledge base or the local model.
+     */
+    private fun handleUtterance(utterance: String) {
+        viewModelScope.launch {
+            try {
+                val parsed = nlpProcessor.process(utterance)
+                onIntentParsed(parsed, utterance)
+            } catch (error: Exception) {
+                _statusMessage.value = error.message ?: "Could not understand the request"
+                fullReset(keepMessage = true)
+            }
+        }
+    }
+
+    // ------------------------------------------------------- hands-free wake
+
+    /**
+     * Turns the hands-free loop on or off.
+     *
+     * Deliberately refuses to start without an installed speech model: the loop's whole
+     * value is that it recognises the wake word locally, and failing loudly now is better
+     * than a microphone that is open with nothing listening.
+     */
+    fun toggleHandsFree() {
+        if (_handsFreeActive.value) {
+            stopHandsFree()
+        } else {
+            startHandsFree()
+        }
+    }
+
+    fun startHandsFree() {
+        val modelPath = modelStore.installedModelPath()
+        if (modelPath == null) {
+            _statusMessage.value = "Import an offline speech model before using hands-free listening."
+            return
+        }
+        viewModelScope.launch {
+            _statusMessage.value = "Loading the offline speech model for hands-free listening…"
+            runCatching {
+                decisionLog.authorize(
+                    Capability.MIC_CAPTURE,
+                    "handsfree.start",
+                    "continuous",
+                    "Hands-free standby opens the microphone to watch for the wake word and nothing else.",
+                )
+            }
+            if (loadedModelPath != modelPath) {
+                if (!sttIntegrator.initializeModel(modelPath)) {
+                    _statusMessage.value = sttIntegrator.lastInitializationError
+                        ?: "The offline speech model could not be loaded"
+                    return@launch
+                }
+                loadedModelPath = modelPath
+            }
+            val started = wakeController.start(wakeCallbacks)
+            _handsFreeActive.value = started
+            if (started) {
+                machine.reset()
+                _statusMessage.value = if (_wakeWordRequired.value) {
+                    "Hands-free standby — say \"Heretic\" to give a command, or \"shaz\" to stop playback."
+                } else {
+                    "Open-mic listening — speak normally, or say \"shaz\" to stop playback."
+                }
+            }
+            refreshWakeState()
+        }
+    }
+
+    fun stopHandsFree() {
+        viewModelScope.launch {
+            wakeController.stop()
+            _handsFreeActive.value = false
+            _wakeState.value = WakeState.OFF
+            _statusMessage.value = "Hands-free listening stopped."
+        }
+    }
+
+    /** Switches between "wake word required" and open-mic standby. */
+    fun setWakeWordRequired(required: Boolean) {
+        _wakeWordRequired.value = required
+        wakeController.setWakeWordRequired(required)
+        _statusMessage.value = if (required) {
+            "Wake word on — say \"Heretic\" first."
+        } else {
+            "Wake word off — the assistant answers any speech it hears."
+        }
+        refreshWakeState()
+    }
+
+    fun toggleWakeWordRequired() = setWakeWordRequired(!_wakeWordRequired.value)
+
+    /** Re-arms the hands-free window from a tap, as if the wake word had been said. */
+    fun armWakeWindow() {
+        wakeController.armNow()
+        _statusMessage.value = "Command window open for " +
+            "${com.example.voiceassistant.wake.WakeWordDetector.DEFAULT_AWAKE_WINDOW_MS / 1000} seconds — go ahead."
+        refreshWakeState()
+    }
+
+    /**
+     * The `"shaz"` interrupt: stop the audio immediately and halt the generation behind it.
+     *
+     * Order matters and is not negotiable — the audio buffer first (so the user hears
+     * silence at once), then the token stream (so no new sentence is queued), then the state
+     * machine and the status line. Everything else in the app is downstream of this.
+     */
+    fun interruptPlayback() = interruptNow(fromWakeWord = false)
+
+    private fun interruptNow(fromWakeWord: Boolean) {
+        interruptedByUser = true
+        val interruptedUtterance = ttsController.interrupt()
+        // Halt the native generation. This is the llama.cpp cancellation flag, so the token
+        // callback stops firing and no further sentence reaches the speaker.
+        runCatching { llamaGenerator.cancel() }
+        wakeController.sleepNow()
+        _streamingReply.value = ""
+        viewModelScope.launch {
+            runCatching {
+                decisionLog.note(
+                    Capability.TTS_SPEAK,
+                    "interrupt",
+                    interruptedUtterance ?: "idle",
+                    "The stop word was heard, so playback was flushed and the generation behind it was halted.",
+                )
+            }
+        }
+        _statusMessage.value = if (fromWakeWord) {
+            "\"shaz\" heard — playback flushed and generation halted."
+        } else {
+            "Playback stopped."
+        }
+        if (uiState.value is AssistantUiState.Speaking || interruptedUtterance != null) {
+            machine.processEvent(AssistantEvent.OnSpeechSynthesisCompleted)
+            machine.processEvent(AssistantEvent.OnCleanupComplete)
+        }
+        refreshWakeState()
+    }
+
+    private fun refreshWakeState() {
+        _wakeState.value = wakeController.state.value
+        _wakeWindowMs.value = wakeController.remainingWindowMs()
+    }
+
+    // -------------------------------------------------------- knowledge base
+
+    /** Indexes one picked document (a `.zip` is expanded member by member). */
+    fun importKnowledgeDocument(uri: Uri, displayName: String? = null) {
+        if (_ragBusy.value) return
+        _ragBusy.value = true
+        viewModelScope.launch {
+            _statusMessage.value = "Indexing the document locally…"
+            try {
+                val authorized = decisionLog.authorize(
+                    capability = Capability.RAG_INDEX,
+                    action = "import.document",
+                    subject = displayName ?: uri.lastPathSegment ?: "document",
+                    because = "The user picked this document in the system file picker, which is the consent to read it.",
+                )
+                if (!authorized) {
+                    _statusMessage.value = "The knowledge base is blocked by the authorization gate."
+                    return@launch
+                }
+                val report = ragIngestor.ingestDocument(uri, displayName) { progress ->
+                    _statusMessage.value = progress
+                }
+                applyIngestReport(report)
+            } catch (error: Exception) {
+                _statusMessage.value = error.message ?: "The document could not be indexed"
+            } finally {
+                _ragBusy.value = false
+            }
+        }
+    }
+
+    /** Indexes every supported document under a picked folder, recursively. */
+    fun importKnowledgeFolder(treeUri: Uri) {
+        if (_ragBusy.value) return
+        _ragBusy.value = true
+        viewModelScope.launch {
+            _statusMessage.value = "Indexing the folder locally…"
+            try {
+                val authorized = decisionLog.authorize(
+                    capability = Capability.RAG_INDEX,
+                    action = "import.tree",
+                    subject = treeUri.lastPathSegment ?: "folder",
+                    because = "The user granted a whole folder through the system picker, so every document in it may be read.",
+                )
+                if (!authorized) {
+                    _statusMessage.value = "The knowledge base is blocked by the authorization gate."
+                    return@launch
+                }
+                val report = ragIngestor.ingestTree(treeUri) { progress ->
+                    _statusMessage.value = progress
+                }
+                applyIngestReport(report)
+            } catch (error: Exception) {
+                _statusMessage.value = error.message ?: "The folder could not be indexed"
+            } finally {
+                _ragBusy.value = false
+            }
+        }
+    }
+
+    /**
+     * Reloads the saved knowledge snapshot into the index and publishes its summary.
+     *
+     * Every import already persists, so this is the other half of the durability story:
+     * documents survive a cold start, and the "Knowledge:" line on the home screen is
+     * accurate before the user opens the panel. A failure here leaves the index empty
+     * rather than blocking startup — the assistant works without a knowledge base.
+     */
+    private suspend fun restoreKnowledgeBase() {
+        val summary = runCatching { ragIngestor.restore() }.getOrElse { error ->
+            _ragStatus.value = "No documents indexed"
+            _statusMessage.value = error.message ?: "The saved knowledge base could not be read"
+            return
+        }
+        _ragSources.value = summary.sources
+        _ragStatus.value = summary.describe()
+        if (!summary.isEmpty) {
+            _statusMessage.value = "Restored ${summary.describe()} from this device."
+            runCatching {
+                decisionLog.note(
+                    Capability.RAG_INDEX,
+                    "restored",
+                    "${summary.sources.size} file(s)",
+                    "The saved on-device knowledge snapshot was reloaded, so no document had to be re-imported.",
+                )
+            }
+        }
+    }
+
+    private fun applyIngestReport(report: com.example.voiceassistant.rag.RagIngestReport) {
+        val summary = ragIngestor.indexSummary()
+        _ragSources.value = summary.sources
+        _ragStatus.value = summary.describe()
+        _ragLastIngest.value = report.describe()
+        _statusMessage.value = report.describe()
+        viewModelScope.launch {
+            runCatching {
+                decisionLog.note(
+                    Capability.RAG_INDEX,
+                    "indexed",
+                    "${report.filesIndexed} file(s)",
+                    "Indexing ran entirely on device and produced ${report.chunksAdded} new excerpt(s) for later retrieval.",
+                )
+            }
+        }
+    }
+
+    fun forgetKnowledgeSource(sourcePath: String) {
+        viewModelScope.launch {
+            val removed = ragIngestor.forget(sourcePath, viewModelScope)
+            val summary = ragIngestor.indexSummary()
+            _ragSources.value = summary.sources
+            _ragStatus.value = summary.describe()
+            _statusMessage.value = if (removed) "Removed $sourcePath from the index." else "That source was not indexed."
+            runCatching {
+                decisionLog.note(
+                    Capability.RAG_INDEX,
+                    "forget",
+                    sourcePath,
+                    "The user removed this source, so its excerpts no longer reach the prompt.",
+                )
+            }
+            if (summary.isEmpty) _ragLastIngest.value = ""
+        }
+    }
+
+    fun clearKnowledgeBase() {
+        viewModelScope.launch {
+            // clear() also deletes the saved snapshot, so "clear" really means the
+            // documents are gone after a restart rather than only out of memory.
+            ragIngestor.clear(viewModelScope)
+            _ragSources.value = emptyList()
+            _ragStatus.value = "No documents indexed"
+            _ragLastIngest.value = ""
+            _ragLastSources.value = emptyList()
+            _statusMessage.value = "Cleared the local knowledge base."
+            runCatching {
+                decisionLog.note(
+                    Capability.RAG_INDEX,
+                    "cleared",
+                    "knowledge base",
+                    "The user emptied the knowledge base, so no excerpts remain in memory or on disk.",
+                )
+            }
+        }
+    }
+
+    fun setKnowledgeBaseEnabled(enabled: Boolean) {
+        _ragEnabled.value = enabled
+        _statusMessage.value = if (enabled) {
+            "Answers will be grounded in your indexed documents."
+        } else {
+            "Answers will come from the model alone."
+        }
+    }
+
+    fun setRagTargetFilter(filter: String) {
+        _ragTargetFilter.value = filter.trim()
+    }
+
+    /**
+     * Retrieves the excerpts that best answer [question], recording the retrieval in the ADR
+     * log. Returns `null` when there is nothing to say, so the caller falls back to an
+     * ordinary answer instead of quoting an empty context.
+     */
+    private suspend fun retrieveContext(question: String): RagContext? {
+        if (!_ragEnabled.value) return null
+        if (!decisionLog.authorize(
+                capability = Capability.RAG_QUERY,
+                action = "retrieve",
+                subject = question.take(80),
+                because = "Answering from documents already on this device needs no network and no further consent.",
+            )
+        ) {
+            return null
+        }
+        val query = RagQuery.parse(question)
+        if (query.isEmpty || RagQuery.looksLikeDeviceCommand(query.question)) return null
+        val configured = _ragTargetFilter.value
+        val effective = if (configured.isNotBlank() && query.fileFilter == null) {
+            query.copy(fileFilter = configured)
+        } else {
+            query
+        }
+        val context = ragIngestor.buildContext(effective)
+        if (context.isEmpty) {
+            _ragLastSources.value = emptyList()
+            return null
+        }
+        _ragLastSources.value = context.sourceLabels
+        runCatching {
+            decisionLog.note(
+                Capability.RAG_QUERY,
+                "retrieved",
+                context.chunks.joinToString(", ") { it.label }.take(180),
+                "Ranking picked ${context.chunks.size} excerpt(s) by token overlap, file name and page number.",
+            )
+        }
+        return context
+    }
+
+    /** The ADR log's capability table plus chain state, for the gates panel. */
+    fun decisionSummary(): String = buildString {
+        appendLine("GATES")
+        Capability.entries.forEach { capability ->
+            val state = if (decisionLog.isGranted(capability)) "ALLOWED" else "DENIED "
+            appendLine("  $state  ${capability.id}")
+        }
+        appendLine()
+        appendLine("ADR LOG")
+        val records = decisionLog.recentRecords(8)
+        if (records.isEmpty()) {
+            appendLine("  (no decisions recorded yet)")
+        } else {
+            records.forEach { record ->
+                appendLine("  #${record.sequence} ${record.outcome} ${record.capability} ${record.action}")
+            }
+        }
+        appendLine()
+        append("Chain: ")
+        append("verified on demand — open the Gates tab to re-walk every hash link.")
+    }
+
+    /** Re-walks the whole `decisions.jsonl` chain and returns the verdict. */
+    fun verifyDecisionChain(): String {
+        var verdict = "checking…"
+        val job = viewModelScope.launch {
+            verdict = runCatching { decisionLog.verifyChain() }.getOrElse { error ->
+                "the chain could not be verified: ${error.message}"
+            } ?: "CHAIN INTACT — every record links to the previous one."
+            _statusMessage.value = verdict
+        }
+        // The launch above is asynchronous; the UI refreshes from statusMessage.
+        job.invokeOnCompletion { }
+        return "Verifying the hash chain… the result appears in the status line."
     }
 
     fun onIntentParsed(parsed: NlpProcessor.OnIntentParsed, originalUtterance: String? = null) {
@@ -747,6 +1288,15 @@ class AssistantViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Answers an open-ended request, grounding it in the local knowledge base when the
+     * question matches something the user has indexed.
+     *
+     * The prompt shape is fixed by [RagPromptComposer] — `Context Information: … Question: …`
+     * — so the llama.cpp path, the LiteRT path and the deterministic fallback all receive
+     * exactly the same block, and the bubble in the transcript quotes the same sources the
+     * model was shown.
+     */
     private fun handleOpenEndedRequest(userText: String) {
         viewModelScope.launch {
             if (userText.isBlank()) {
@@ -754,16 +1304,31 @@ class AssistantViewModel @Inject constructor(
                 machine.processEvent(AssistantEvent.OnCleanupComplete)
                 return@launch
             }
-            if (llamaModelStore.installedModelPath() == null) {
-                _statusMessage.value = "Replying with the built-in fallback (no reply model installed)…"
-            } else {
-                // Loading a multi-GB model takes 5–15 seconds the first time.
-                // Say so plainly rather than implying an instant answer.
-                _statusMessage.value = "Thinking with the on-device model (first load can take 5–15 seconds)…"
+
+            val context = runCatching { retrieveContext(userText) }.getOrNull()
+            val prompt = RagPromptComposer.compose(context, userText)
+
+            _statusMessage.value = when {
+                prompt.usedContext && llamaModelStore.installedModelPath() != null ->
+                    "Answering from ${prompt.contextChunks} local excerpt(s) with the on-device model…"
+                prompt.usedContext ->
+                    "Answering from ${prompt.contextChunks} local excerpt(s)…"
+                llamaModelStore.installedModelPath() == null ->
+                    "Replying with the built-in fallback (no reply model installed)…"
+                else ->
+                    // Loading a multi-GB model takes 5–15 seconds the first time.
+                    "Thinking with the on-device model (first load can take 5–15 seconds)…"
             }
+
             val reply = try {
-                localTextGenerator.generateReply(userText)
+                localTextGenerator.generateReply(prompt)
             } catch (error: Exception) {
+                if (interruptedByUser) {
+                    // "shaz" stopped the generation on purpose; that is not a failure.
+                    interruptedByUser = false
+                    machine.processEvent(AssistantEvent.OnCleanupComplete)
+                    return@launch
+                }
                 _replyModelStatus.value = "Local reply model could not be loaded"
                 _statusMessage.value = error.message ?: "Local generation failed"
                 "I couldn't load the local reply model. Please check the selected file."
@@ -835,6 +1400,7 @@ class AssistantViewModel @Inject constructor(
             withTimeoutOrNull(TTS_COMPLETION_TIMEOUT_MS) {
                 ttsController.events.first { event ->
                     (event is TtsEvent.OnDone && event.utteranceId == utteranceId) ||
+                        (event is TtsEvent.OnInterrupted && event.utteranceId == utteranceId) ||
                         event is TtsEvent.OnError
                 }
             }
@@ -873,6 +1439,11 @@ class AssistantViewModel @Inject constructor(
     }
 
     override fun onCleared() {
+        // The hands-free loop holds the microphone; it must be released before the capture
+        // source is closed, or AudioRecord is torn down while a read is in flight.
+        wakeController.sleepNow()
+        ttsController.interrupt()
+        runCatching { llamaGenerator.cancel() }
         sttIntegrator.releaseModel()
         audioCaptureSource.close()
         super.onCleared()

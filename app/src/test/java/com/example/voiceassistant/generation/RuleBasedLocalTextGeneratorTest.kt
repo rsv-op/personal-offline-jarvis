@@ -117,7 +117,7 @@ class RuleBasedLocalTextGeneratorTest {
         // 'hi' is in the greeting set; that path is a greeting, not a guess. This test
         // specifically exercises the *length-floor* branch with a 4-character non-greeting.
         val nonGreeting = generator.generateReply("y33")
-        assertTrue(nonGreeting, nonGreeting.contains("need a longer sentence"))
+        assertTrue("was: $nonGreeting", nonGreeting.contains("need a longer sentence"))
     }
 
     @Test
@@ -134,8 +134,8 @@ class RuleBasedLocalTextGeneratorTest {
     fun `an unrecognised sentence echoes the input instead of fabricating an answer`() = runTest {
         noModel()
         val reply = generator.generateReply("Tell me about the lighthouse at Alexandria")
-        assertTrue(reply, reply.contains("Tell me about the lighthouse at Alexandria"))
-        assertTrue(reply, reply.contains("don't have a local reply model"))
+        assertTrue("was: $reply", reply.contains("Tell me about the lighthouse at Alexandria"))
+        assertTrue("was: $reply", reply.contains("don't have a local reply model"))
     }
 
     @Test

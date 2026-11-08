@@ -13,9 +13,13 @@ import com.example.voiceassistant.execution.TimerExecutor
 import com.example.voiceassistant.execution.TtsController
 import com.example.voiceassistant.execution.TtsEvent
 import com.example.voiceassistant.chat.ChatHistoryRepository
+import com.example.voiceassistant.core.DecisionLog
+import com.example.voiceassistant.rag.RagIndex
+import com.example.voiceassistant.rag.RagIngestor
 import com.example.voiceassistant.chat.ChatMessageDao
 import com.example.voiceassistant.execution.ContactsExecutor
 import com.example.voiceassistant.generation.LocalTextGenerator
+import com.example.voiceassistant.generation.RagPrompt
 import com.example.voiceassistant.generation.llama.LlamaLocalTextGenerator
 import com.example.voiceassistant.generation.llama.LlamaModelStore
 import com.example.voiceassistant.nlp.AppIntent
@@ -43,6 +47,9 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -83,6 +90,8 @@ class AssistantViewModelTest {
     private lateinit var mockMemoryBudget: com.example.voiceassistant.memory.DeviceMemory
     private lateinit var mockSystemMetricsCollector:
         com.example.voiceassistant.telematics.SystemMetricsCollector
+    private lateinit var ragIngestor: RagIngestor
+    private lateinit var decisionLog: DecisionLog
     private lateinit var classifier: AiMatrixClassifier
     private lateinit var memory: JarvisMemory
     private lateinit var brain: OnDeviceBrain
@@ -118,6 +127,8 @@ class AssistantViewModelTest {
         // the existing test surface never inspects them, so a plain Mockito mock is fine.
         mockMemoryBudget = mock()
         mockSystemMetricsCollector = mock()
+        // The real ingestor over an empty index: these tests exercise retrieval, not SAF.
+        ragIngestor = RagIngestor(mockContext, RagIndex())
 
         frames = MutableSharedFlow(extraBufferCapacity = 4)
         doReturn(frames).whenever(mockAudioCaptureSource).frames
@@ -140,6 +151,12 @@ class AssistantViewModelTest {
             whenever(mockSttEngine.getPartialText()).thenReturn("")
             whenever(mockSttEngine.getFinalText()).thenReturn("")
         }
+
+        decisionLog = DecisionLog().apply {
+            directory = File(temporaryFolder.root, "decisions")
+            ioDispatcher = dispatcher
+        }
+        runBlocking { decisionLog.seedDefaultGrants() }
 
         val vault = SecureVault(File(temporaryFolder.root, "vault"), SoftwareVaultCipher())
         memory = JarvisMemory(vault).apply { ioDispatcher = dispatcher }
@@ -186,6 +203,8 @@ class AssistantViewModelTest {
             memory = memory,
             memoryBudget = mockMemoryBudget,
             systemMetricsCollector = mockSystemMetricsCollector,
+            ragIngestor = ragIngestor,
+            decisionLog = decisionLog,
             speechDispatcher = dispatcher
         ) as T
         }
@@ -391,5 +410,98 @@ class AssistantViewModelTest {
         assertEquals(1, actions.size)
         assertEquals("ToggleFlashlight", actions.single().label)
         assertTrue(actions.single().outcome.contains("Flashlight on"))
+    }
+
+    // ------------------------------------------------- local knowledge base
+
+    @Test
+    fun `a question with no indexed documents uses the plain prompt`() = runTest(dispatcher) {
+        whenever(mockLocalTextGenerator.generateReply(any<RagPrompt>())).thenReturn("plain reply")
+
+        viewModel.onIntentParsed(
+            NlpProcessor().process("what is the capital of France"),
+            "what is the capital of France",
+        )
+        advanceUntilIdle()
+
+        verifyBlocking(mockLocalTextGenerator) { generateReply(any<RagPrompt>()) }
+        assertEquals(AssistantUiState.Idle, viewModel.uiState.value)
+        assertEquals("No documents indexed", viewModel.ragStatus.value)
+        assertTrue(viewModel.ragSources.value.isEmpty())
+    }
+
+    @Test
+    fun `clearing the knowledge base empties the index and the status`() = runTest(dispatcher) {
+        viewModel.clearKnowledgeBase()
+        advanceUntilIdle()
+
+        assertEquals("No documents indexed", viewModel.ragStatus.value)
+        assertTrue(viewModel.ragSources.value.isEmpty())
+    }
+
+    @Test
+    fun `the knowledge base can be switched off`() = runTest(dispatcher) {
+        assertTrue(viewModel.ragEnabled.value)
+        viewModel.setKnowledgeBaseEnabled(false)
+        advanceUntilIdle()
+        assertFalse(viewModel.ragEnabled.value)
+        viewModel.setKnowledgeBaseEnabled(true)
+        advanceUntilIdle()
+        assertTrue(viewModel.ragEnabled.value)
+    }
+
+    @Test
+    fun `a target filter is stored for the next query`() = runTest(dispatcher) {
+        viewModel.setRagTargetFilter("  notes.md page 2  ")
+        advanceUntilIdle()
+        assertEquals("notes.md page 2", viewModel.ragTargetFilter.value)
+    }
+
+    // ------------------------------------------------------- wake and stop
+
+    @Test
+    fun `the wake chip refuses hands-free without a speech model`() = runTest(dispatcher) {
+        whenever(mockModelStore.installedModelPath()).thenReturn(null)
+
+        viewModel.startHandsFree()
+        advanceUntilIdle()
+
+        assertFalse(viewModel.handsFreeActive.value)
+        assertTrue(
+            viewModel.statusMessage.value.contains("speech model", ignoreCase = true),
+        )
+    }
+
+    @Test
+    fun `the wake word requirement is toggled and reflected in the state`() = runTest(dispatcher) {
+        assertTrue(viewModel.wakeWordRequired.value)
+        viewModel.toggleWakeWordRequired()
+        advanceUntilIdle()
+        assertFalse(viewModel.wakeWordRequired.value)
+        assertTrue(viewModel.statusMessage.value.contains("Wake word off", ignoreCase = true))
+    }
+
+    @Test
+    fun `shaz interrupts playback and returns the assistant to idle`() = runTest(dispatcher) {
+        viewModel.interruptPlayback()
+        advanceUntilIdle()
+
+        assertEquals(AssistantUiState.Idle, viewModel.uiState.value)
+        assertTrue(
+            viewModel.statusMessage.value.contains("Playback stopped", ignoreCase = true),
+        )
+    }
+
+    @Test
+    fun `every capability decision is appended to the ADR log`() = runTest(dispatcher) {
+        viewModel.interruptPlayback()
+        advanceUntilIdle()
+
+        val log = decisionLog.logFile
+        assertNotNull(log)
+        assertTrue(log!!.isFile)
+        assertTrue(log.readLines().any { it.contains("interrupt") })
+        // The chain the app writes must verify.
+        assertNull(decisionLog.verifyChain())
     }
 }

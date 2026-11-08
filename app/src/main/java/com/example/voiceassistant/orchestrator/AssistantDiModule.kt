@@ -6,6 +6,7 @@ import com.example.voiceassistant.aimatrix.AiMatrixModelStore
 import com.example.voiceassistant.aimatrix.IntentModelSource
 import com.example.voiceassistant.aimatrix.OnDeviceBrain
 import com.example.voiceassistant.chat.ChatDatabase
+import com.example.voiceassistant.core.DecisionLog
 import com.example.voiceassistant.chat.ChatMessageDao
 import com.example.voiceassistant.execution.AlarmExecutor
 import com.example.voiceassistant.execution.AssistantStatusProvider
@@ -20,6 +21,9 @@ import com.example.voiceassistant.generation.llama.LlamaModelService
 import com.example.voiceassistant.generation.llama.LlamaModelStore
 import com.example.voiceassistant.generation.RuleBasedLocalTextGenerator
 import com.example.voiceassistant.nlp.IntentRouter
+import com.example.voiceassistant.rag.RagIndex
+import com.example.voiceassistant.rag.RagIngestor
+import com.example.voiceassistant.rag.RagStore
 import com.example.voiceassistant.nlp.NlpProcessor
 import com.example.voiceassistant.nlp.TextNormalizer
 import com.example.voiceassistant.stt.SherpaOnnxSttEngine
@@ -58,6 +62,46 @@ fun interface LlamaModelServiceStarter {
 @Module
 @InstallIn(SingletonComponent::class)
 object AssistantDiModule {
+    /**
+     * The single decision log for the process.
+     *
+     * `decisions.jsonl` lives in app-private storage, so it survives updates and is
+     * removed when the user uninstalls — never exported, never uploaded. The default
+     * grants are written by `VoiceAssistantApplication` once the process is up.
+     */
+    @Provides
+    @Singleton
+    fun provideDecisionLog(@ApplicationContext context: Context): DecisionLog =
+        DecisionLog().apply { attach(File(context.filesDir, "decisions")) }
+
+    /** The retrieval index. One instance, shared by the ingestor and the voice loop. */
+    @Provides
+    @Singleton
+    fun provideRagIndex(): RagIndex = RagIndex()
+
+    /**
+     * The knowledge-base snapshot (`filesDir/knowledge/index.json`).
+     *
+     * Without this the index was memory-only, so every cold start silently forgot every
+     * document the user had imported. It is a plain JSON file rather than a Room table
+     * because the index is rebuilt wholesale on load and never queried by key.
+     */
+    @Provides
+    @Singleton
+    fun provideRagStore(@ApplicationContext context: Context): RagStore = RagStore(context)
+
+    /**
+     * The SAF ingestor, bound by hand rather than with `@Inject` so the index, the store
+     * and the context are provably the same singletons the rest of the graph sees.
+     */
+    @Provides
+    @Singleton
+    fun provideRagIngestor(
+        @ApplicationContext context: Context,
+        index: RagIndex,
+        store: RagStore,
+    ): RagIngestor = RagIngestor(context, index, store)
+
     @Provides
     fun provideTextNormalizer() = TextNormalizer()
 

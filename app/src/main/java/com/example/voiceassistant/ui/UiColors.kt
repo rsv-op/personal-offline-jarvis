@@ -10,6 +10,8 @@ internal val JarvisPanel = Color(0xFF101827)
 /** Magenta/violet used by the Heretic orb and waveform. Distinct from the primary
  *  cyan so the two ring layers read as a deliberate pair rather than a colour clash. */
 internal val HereticMagenta = Color(0xFFD14BFF)
+/** Amber: reserved for destructive or interruptive actions (Remove, SHAZ). */
+internal val JarvisAmber = Color(0xFFFFB74D)
 /** Softer mid-tone violet for the orb's plasma core; the rings use [JarvisCyan]
  *  and [HereticMagenta] at full saturation, the core uses this to keep contrast
  *  with the central sigil. */

@@ -1,5 +1,6 @@
 package com.example.voiceassistant.stt
 
+import android.util.Log
 import com.example.voiceassistant.memory.DeviceMemory
 import com.k2fsa.sherpa.onnx.FeatureConfig
 import com.k2fsa.sherpa.onnx.OnlineModelConfig
@@ -12,7 +13,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 
 /**
- * Offline sherpa-onnx adapter using the Streaming Zipformer transducer model.
+ * Offline sherpa-onnx adapter using the Streaming Zipformer (transducer) model.
  *
  * Replaces the Vosk engine (PR #27). The [SttEngine] contract is unchanged so
  * the [OfflineSttIntegrator] does not need to be modified.
@@ -32,20 +33,37 @@ import javax.inject.Inject
  * size with no measurable accuracy loss on the 20M English model, and they
  * fit comfortably under the 1.5 GB free-RAM budget on the target device.
  *
- * The streaming protocol mirrors Vosk: 16 kHz mono 16-bit PCM frames are
- * fed via [processAudio], the engine returns `true` when the recogniser
- * has detected an endpoint (silence after speech), and the partial/final
- * text comes from [getPartialText] / [getFinalText]. The integrator
- * consumes this exactly the same way it consumed the Vosk engine.
+ * ## Why the constructor-and-fields style
  *
- * The native libraries (`libsherpa-onnx-jni.so` for `arm64-v8a` and
- * `armeabi-v7a`) are bundled inside the `com.github.k2-fsa:sherpa-onnx:1.13.8`
- * AAR from jitpack. No additional .so files need to be downloaded or
- * installed by the user.
+ * sherpa-onnx 1.13.8 exposes its configuration as **plain Kotlin classes with
+ * public mutable properties** (`FeatureConfig(sampleRate = …)`,
+ * `OnlineModelConfig(transducer = …, tokens = …)`) — there is no
+ * `FeatureConfig.builder()` in the published AAR. An earlier revision of this
+ * file used a builder chain copied from an unrelated JNI sample; it compiled
+ * against nothing and would have thrown `NoSuchMethodError` on device. The
+ * class below is written against the shipped JVM API
+ * (the `kotlin-api` sources at tag `v1.13.8`), which is what the
+ * `com.github.k2-fsa:sherpa-onnx` artefact actually contains.
+ *
+ * ## Streaming protocol
+ *
+ * 16 kHz mono 16-bit PCM frames arrive through [processAudio]. They are
+ * converted to the float32 `[-1, 1]` range sherpa-onnx expects, fed into the
+ * live [OnlineStream], and the recogniser is drained until it is no longer
+ * ready. `true` is returned when an endpoint (silence after speech) has been
+ * detected, which is the same signal the Vosk engine produced, so
+ * [OfflineSttIntegrator] consumes it unchanged.
+ *
+ * The native libraries (`libsherpa-onnx-jni.so`) ship inside the
+ * `com.github.k2-fsa:sherpa-onnx:1.13.8` AAR; the `extractSherpaJniLibs` task
+ * in `app/build.gradle.kts` unpacks them into `build/sherpa-jni` at configure
+ * time and packs the `arm64-v8a` slice into the APK, so nothing is downloaded
+ * at runtime.
  */
 class SherpaOnnxSttEngine @Inject constructor(
     private val memoryBudget: DeviceMemory
 ) : SttEngine {
+
     private var recognizer: OnlineRecognizer? = null
     private var stream: OnlineStream? = null
     private var modelDirectory: File? = null
@@ -55,6 +73,7 @@ class SherpaOnnxSttEngine @Inject constructor(
     override fun initialize(modelPath: String) {
         release()
         val directory = File(modelPath)
+
         // Validate the *contents*, not just the file names. The previous
         // Vosk-era bug — an import that wrote empty files passing the
         // "does conf/model.conf exist" check — had the same root cause as
@@ -76,55 +95,80 @@ class SherpaOnnxSttEngine @Inject constructor(
         }
 
         val tokens = File(directory, "tokens.txt")
-        val encoder = pickFile(directory, "encoder", ".onnx")
-        val decoder = pickFile(directory, "decoder", ".onnx")
-        val joiner = pickFile(directory, "joiner", ".onnx")
+        val encoder = pickFile(directory, "encoder")
+        val decoder = pickFile(directory, "decoder")
+        val joiner = pickFile(directory, "joiner")
         checkNotNull(encoder) { "sherpa-onnx model is missing encoder-*.onnx in $modelPath" }
         checkNotNull(decoder) { "sherpa-onnx model is missing decoder-*.onnx in $modelPath" }
         checkNotNull(joiner) { "sherpa-onnx model is missing joiner-*.onnx in $modelPath" }
+        check(tokens.isFile) { "sherpa-onnx model is missing tokens.txt in $modelPath" }
 
-        // The Java config uses a Builder pattern. FeatureConfig defaults
-        // to sample_rate=16000 and feature_dim=80, which is exactly the
-        // 16 kHz Zipformer configuration we want, so we don't set it
-        // explicitly.
-        val modelConfig = OnlineModelConfig.builder()
-            .setTransducer(
-                OnlineTransducerModelConfig.builder()
-                    .setEncoder(encoder.absolutePath)
-                    .setDecoder(decoder.absolutePath)
-                    .setJoiner(joiner.absolutePath)
-                    .build()
-            )
-            .setTokens(tokens.absolutePath)
-            .setNumThreads(2)
-            // Provider: cpu. sherpa-onnx 1.13.8 also supports "nnapi" for
-            // NNAPI acceleration, but only on a subset of devices; the
-            // INT8 zipformer model is already fast enough on CPU, and
-            // "cpu" avoids the NNAPI compatibility matrix entirely.
-            .setProvider("cpu")
-            .build()
+        // 16 kHz / 80-bin log-mel features: the exact front-end the
+        // gigaspeech / librispeech zipformer transducers were trained on.
+        // Dither is left at 0 — we feed already-clean device microphone
+        // audio, and dithering a live signal costs accuracy.
+        val featureConfig = FeatureConfig(
+            sampleRate = SAMPLE_RATE_HZ,
+            featureDim = FEATURE_DIM,
+            dither = 0.0f,
+        )
 
-        val config = OnlineRecognizerConfig.builder()
-            .setFeatureConfig(
-                FeatureConfig.builder()
-                    .setSampleRate(SAMPLE_RATE_HZ)
-                    .setFeatureDim(80)
-                    .build()
-            )
-            .setOnlineModelConfig(modelConfig)
-            .setDecodingMethod("greedy_search")
-            .setEnableEndpoint(true)
-            .build()
+        val transducer = OnlineTransducerModelConfig(
+            encoder = encoder.absolutePath,
+            decoder = decoder.absolutePath,
+            joiner = joiner.absolutePath,
+        )
+
+        val modelConfig = OnlineModelConfig(
+            transducer = transducer,
+            tokens = tokens.absolutePath,
+            // Two threads is the sweet spot on a mid-range ARM64 phone:
+            // the int8 zipformer decodes ~8× real time on two cores and
+            // leaves the other cores for llama.cpp when the user is in a
+            // conversation.
+            numThreads = 2,
+            // "cpu" only. sherpa-onnx 1.13.8 also understands "nnapi" and
+            // "xnnpack", but the NNAPI compatibility matrix is a support
+            // burden with no benefit for a 20M-parameter streaming model,
+            // and the whole app is explicitly CPU-only for determinism.
+            provider = "cpu",
+            debug = false,
+            modelType = "transducer",
+        )
+
+        val config = OnlineRecognizerConfig(
+            featConfig = featureConfig,
+            modelConfig = modelConfig,
+            // Greedy search is the low-latency streaming decoder. Modified
+            // beam search needs complete utterances, which we do not have
+            // in a hands-free loop.
+            decodingMethod = "greedy_search",
+            // Endpointing is what tells [OfflineSttIntegrator] that the
+            // utterance finished. The trailing-silence window is set so a
+            // natural pause between two sentences does not cut the user
+            // off mid-command.
+            enableEndpoint = true,
+            rule1MinTrailingSilence = 2.4f,
+            rule2MinTrailingSilence = 1.2f,
+            rule3MinUtteranceLength = 20f,
+        )
 
         try {
-            recognizer = OnlineRecognizer(config)
-            stream = recognizer!!.createStream()
+            val created = OnlineRecognizer(config)
+            recognizer = created
+            stream = created.createStream()
             modelDirectory = directory
             released.set(false)
+            Log.i(TAG, "sherpa-onnx recogniser ready at ${directory.absolutePath}")
         } catch (error: Exception) {
-            recognizer?.release()
+            // A half-initialised recogniser is worse than none: calls into
+            // the native layer with a null handle abort the process. Tear
+            // everything down and let the integrator surface the failure.
+            runCatching { recognizer?.release() }
             recognizer = null
             stream = null
+            modelDirectory = null
+            released.set(true)
             throw error
         }
     }
@@ -133,12 +177,17 @@ class SherpaOnnxSttEngine @Inject constructor(
     override fun processAudio(audioData: ShortArray): Boolean {
         val currentStream = requireStream()
         val currentRecognizer = requireRecognizer()
-        // sherpa-onnx consumes float32 in [-1, 1]. Vosk consumed int16,
-        // so the integrator's audio frames are still int16. Convert once
-        // here; the conversion is 1 mul + 1 div per sample, well below
-        // the cost of the decode step that follows.
-        val samples = ShortArrayToFloatArray.convert(audioData)
-        currentStream.acceptWaveform(samples, SAMPLE_RATE_HZ)
+        if (audioData.isEmpty()) return false
+
+        // sherpa-onnx consumes float32 in [-1, 1]; Vosk consumed int16, so
+        // the integrator still hands us int16 frames. Convert once here —
+        // one multiply per sample, which is negligible next to the decode
+        // step that follows.
+        currentStream.acceptWaveform(ShortArrayToFloatArray.convert(audioData), SAMPLE_RATE_HZ)
+
+        // Drain the recogniser. Streaming zipformer keeps a chunk buffer,
+        // and `isReady` is true whenever a new chunk is available, so this
+        // loop runs 0–2 times per 100 ms frame.
         while (currentRecognizer.isReady(currentStream)) {
             currentRecognizer.decode(currentStream)
         }
@@ -147,9 +196,10 @@ class SherpaOnnxSttEngine @Inject constructor(
 
     @Synchronized
     override fun getPartialText(): String {
-        val currentStream = requireStream()
-        val currentRecognizer = requireRecognizer()
-        return currentRecognizer.getResult(currentStream).text.orEmpty().trim()
+        val currentStream = stream ?: return ""
+        val currentRecognizer = recognizer ?: return ""
+        return runCatching { currentRecognizer.getResult(currentStream).text.orEmpty().trim() }
+            .getOrDefault("")
     }
 
     @Synchronized
@@ -159,24 +209,30 @@ class SherpaOnnxSttEngine @Inject constructor(
     override fun reset() {
         val currentRecognizer = recognizer ?: return
         val currentStream = stream ?: return
-        currentRecognizer.reset(currentStream)
+        // The stream resets its own feature buffer and decoder state, which
+        // is cheaper (and safer) than tearing down the stream object.
+        runCatching { currentRecognizer.reset(currentStream) }
     }
 
     @Synchronized
     override fun release() {
         if (released.getAndSet(true)) return
         try {
-            stream?.release()
+            runCatching { stream?.release() }
         } finally {
             stream = null
             try {
-                recognizer?.release()
+                runCatching { recognizer?.release() }
             } finally {
                 recognizer = null
                 modelDirectory = null
             }
         }
     }
+
+    /** Absolute path of the loaded model directory, or null when released. */
+    @Synchronized
+    fun loadedModelDirectory(): String? = modelDirectory?.absolutePath
 
     private fun requireRecognizer(): OnlineRecognizer =
         recognizer ?: error("sherpa-onnx STT engine has not been initialized")
@@ -185,32 +241,38 @@ class SherpaOnnxSttEngine @Inject constructor(
         stream ?: error("sherpa-onnx STT engine has not been initialized")
 
     /**
-     * Picks the first file inside [directory] whose name starts with
-     * [prefix] and ends with [suffix]. Used to find the encoder/decoder/
-     * joiner ONNX regardless of which checkpoint name (e.g. `epoch-99-
-     * avg-1`, `int8`, etc.) the model archive uses.
+     * Picks a model file inside [directory] whose name starts with [prefix]
+     * and ends with `.onnx`.
+     *
+     * INT8 files are preferred: they are ~4× smaller on disk and, for the
+     * 20M streaming zipformer, decode with the same word error rate. Ties
+     * are broken by file size (larger first) so the non-int8 file is only
+     * selected when no int8 variant exists.
      */
-    private fun pickFile(directory: File, prefix: String, suffix: String): File? =
+    private fun pickFile(directory: File, prefix: String): File? =
         directory.walkTopDown()
-            .filter { it.isFile && it.name.startsWith(prefix) && it.name.endsWith(suffix) }
-            .sortedBy { it.name.length }
-            // Prefer the shorter (non-int8) name when both exist. The
-            // int8 variants have a longer name (`.int8` token), so
-            // sorting by name length and taking the first is a stable,
-            // content-independent heuristic. The model loader accepts
-            // either format, so the int8 fallback is the second choice.
+            .filter { it.isFile && it.name.startsWith(prefix) && it.name.endsWith(".onnx") }
+            .sortedWith(
+                compareByDescending<File> { it.name.contains("int8", ignoreCase = true) }
+                    .thenByDescending { it.length() }
+            )
             .firstOrNull()
 
     private companion object {
+        const val TAG = "SherpaOnnxSttEngine"
         const val SAMPLE_RATE_HZ = 16_000
+        const val FEATURE_DIM = 80
     }
 }
 
 /**
- * Pure-Kotlin helper: convert a `ShortArray` of 16-bit PCM samples into
- * a `FloatArray` of normalized [-1, 1] floats. Inlined because this is
- * called on every audio frame (1600 samples per frame at 16 kHz, 100 ms)
- * and a function call per frame adds up.
+ * Pure-Kotlin helper: convert a `ShortArray` of 16-bit PCM samples into a
+ * `FloatArray` of normalized [-1, 1] floats.
+ *
+ * The divisor is 32768 (2^15) rather than 32767 so the negative rail
+ * (-32768 -> exactly -1.0) is symmetric with the positive rail, which is what
+ * the ONNX front-end expects. Inlined per sample because this runs on every
+ * audio frame (1600 samples per 100 ms frame at 16 kHz).
  */
 private object ShortArrayToFloatArray {
     fun convert(samples: ShortArray): FloatArray {

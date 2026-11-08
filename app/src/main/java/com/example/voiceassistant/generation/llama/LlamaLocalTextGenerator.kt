@@ -1,6 +1,8 @@
 package com.example.voiceassistant.generation.llama
 
 import com.example.voiceassistant.generation.LocalTextGenerator
+import com.example.voiceassistant.generation.RagPrompt
+import com.example.voiceassistant.generation.RagPromptComposer
 import com.example.voiceassistant.memory.DeviceMemory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -49,8 +51,21 @@ class LlamaLocalTextGenerator @Inject constructor(
     /** llama.cpp version string, or an empty string when the native library is unavailable. */
     val backendVersion: String get() = LlamaNative.version()
 
-    override suspend fun generateReply(userText: String): String {
-        require(userText.isNotBlank()) { "Cannot generate a reply for empty input" }
+    override suspend fun generateReply(userText: String): String =
+        generateReply(RagPromptComposer.compose(context = null, question = userText))
+
+    /**
+     * Generation with an explicit prompt.
+     *
+     * This is the seam the RAG path uses: the excerpts arrive already formatted by
+     * [RagPromptComposer], so the model sees the same `Context Information: … Question: …`
+     * block the UI reported quoting, and this class needs no knowledge of the index.
+     *
+     * A cancellation requested through [cancel] (the `shaz` interrupt) surfaces as an
+     * [IllegalStateException] so the caller can tell an interrupted answer from a failure.
+     */
+    override suspend fun generateReply(prompt: RagPrompt): String {
+        require(prompt.userPrompt.isNotBlank()) { "Cannot generate a reply for empty input" }
 
         if (!LlamaNative.isAvailable) {
             throw IllegalStateException(
@@ -73,8 +88,8 @@ class LlamaLocalTextGenerator @Inject constructor(
                 val builder = StringBuilder()
 
                 val result = LlamaNative.generate(
-                    systemPrompt = SYSTEM_INSTRUCTION,
-                    userPrompt = userText.take(MAX_INPUT_CHARACTERS),
+                    systemPrompt = prompt.systemInstruction,
+                    userPrompt = prompt.userPrompt.take(MAX_INPUT_CHARACTERS),
                     maxTokens = MAX_OUTPUT_TOKENS,
                     temperature = TEMPERATURE
                 ) { bytes ->

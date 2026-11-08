@@ -1,0 +1,353 @@
+package com.example.voiceassistant.wake
+
+import com.example.voiceassistant.stt.AudioCaptureSource
+import com.example.voiceassistant.stt.OfflineSttIntegrator
+import com.example.voiceassistant.stt.SherpaOnnxModelStore
+import com.example.voiceassistant.stt.SttEngine
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import org.mockito.kotlin.any
+import org.mockito.kotlin.doNothing
+import org.mockito.kotlin.mock
+import org.mockito.kotlin.never
+import org.mockito.kotlin.verify
+import org.mockito.kotlin.whenever
+
+/**
+ * The hands-free loop, driven by a fake recogniser: no microphone, no model, no playback.
+ *
+ * What these tests pin down, in the order a user hits them:
+ *
+ *  1. starting the loop opens the microphone **and** the recogniser as one unit;
+ *  2. a wake word alone opens the window and says "yes", while ordinary room speech is
+ *     dropped rather than executed;
+ *  3. "hey heretic, <command>" wakes *and* runs the command in one utterance;
+ *  4. "shaz" reaches [ContinuousWakeController.Callbacks.onInterrupt] and nothing else,
+ *     even while the assistant is busy speaking — this is the absolute interrupt, so it
+ *     must not be gated by the busy flag;
+ *  5. the wake window closes on its own, so the chip in the UI cannot lie about it.
+ */
+@OptIn(ExperimentalCoroutinesApi::class)
+class ContinuousWakeControllerTest {
+
+    private class RecordingCallbacks : ContinuousWakeController.Callbacks {
+        val wakes = mutableListOf<Unit>()
+        val commands = mutableListOf<Pair<String, Boolean>>()
+        var interrupts = 0
+        val ignored = mutableListOf<String>()
+        val partials = mutableListOf<String>()
+        val problems = mutableListOf<String>()
+
+        override fun onWakeAcknowledged() {
+            wakes += Unit
+        }
+
+        override fun onCommand(command: String, wokeNow: Boolean) {
+            commands += command to wokeNow
+        }
+
+        override fun onInterrupt() {
+            interrupts++
+        }
+
+        override fun onIgnoredAmbient(text: String) {
+            ignored += text
+        }
+
+        override fun onPartial(text: String) {
+            partials += text
+        }
+
+        override fun onProblem(message: String) {
+            problems += message
+        }
+    }
+
+    /**
+     * A controller wired to a real [OfflineSttIntegrator].
+     *
+     * The integrator is *not* mocked: `startTranscription()`/`stopTranscription()` are
+     * final, plain functions that only flip an internal `AtomicBoolean`, and mocking them
+     * would need a mockito-inline agent the rest of the suite does not use. A real one over
+     * a mock [SttEngine] exercises the same state the app's microphone session does, which
+     * is what the assertions below are about.
+     */
+    private fun controller(
+        scope: TestScope,
+        capture: AudioCaptureSource = mock(),
+        gate: WakeSessionGate = WakeSessionGate(),
+        clock: () -> Long = { 0L },
+        integrator: OfflineSttIntegrator = realIntegrator(scope),
+    ): ContinuousWakeController = ContinuousWakeController(
+        capture = capture,
+        integrator = integrator,
+        gate = gate,
+        scope = scope,
+        clock = clock,
+    )
+
+    private fun realIntegrator(scope: TestScope): OfflineSttIntegrator {
+        val engine = mock<SttEngine>()
+        val integrator = OfflineSttIntegrator(
+            engine = engine,
+            // A flow nobody emits into: the integrator's collector still runs, which is
+            // what the assertions below observe.
+            audioStream = kotlinx.coroutines.flow.MutableSharedFlow<ShortArray>(extraBufferCapacity = 1),
+            frameRecycler = {},
+            eventDispatcher = {},
+            dispatcher = kotlinx.coroutines.Dispatchers.Unconfined,
+        )
+        // `startTranscription()` refuses to run without a loaded model, exactly as it does
+        // in the app, so the fake engine has to be initialized first.
+        kotlinx.coroutines.runBlocking { integrator.initializeModel("/fake/model") }
+        return integrator
+    }
+
+    @Test
+    fun `start opens the microphone and the recogniser together`() = runTest {
+        val capture = mock<AudioCaptureSource>()
+        val integrator = realIntegrator(this)
+        val controller = controller(this, capture = capture, integrator = integrator)
+
+        val started = controller.start(RecordingCallbacks())
+
+        assertTrue(started)
+        assertTrue(controller.isListening)
+        verify(capture).start()
+        assertTrue("the recogniser must run whenever the mic is open", integrator.isTranscribingNow)
+        assertEquals(WakeState.STANDBY, controller.state.value)
+    }
+
+    @Test
+    fun `start reports a problem and stays off when the microphone fails`() = runTest {
+        val capture = mock<AudioCaptureSource>()
+        whenever(capture.start()).thenThrow(IllegalStateException("microphone busy"))
+        val controller = controller(this, capture = capture)
+        val callbacks = RecordingCallbacks()
+
+        val started = controller.start(callbacks)
+
+        assertFalse(started)
+        assertFalse(controller.isListening)
+        assertEquals(WakeState.OFF, controller.state.value)
+        assertEquals(listOf("microphone busy"), callbacks.problems)
+    }
+
+    @Test
+    fun `the bare wake word opens the window and is acknowledged`() = runTest {
+        val controller = controller(this)
+        val callbacks = RecordingCallbacks()
+        controller.start(callbacks)
+
+        controller.onFinalTranscript("hey heretic")
+
+        assertEquals(1, callbacks.wakes.size)
+        assertTrue(callbacks.commands.isEmpty())
+        assertTrue(controller.isArmed())
+        assertEquals(WakeState.ARMED, controller.state.value)
+        assertEquals(1, controller.wakeCount.value)
+    }
+
+    @Test
+    fun `ambient speech without the wake word is ignored, not executed`() = runTest {
+        val controller = controller(this, gate = WakeSessionGate(wakeWordRequired = true))
+        val callbacks = RecordingCallbacks()
+        controller.start(callbacks)
+
+        controller.onFinalTranscript("turn on the kitchen lights")
+
+        assertTrue(callbacks.commands.isEmpty())
+        assertEquals(listOf("turn on the kitchen lights"), callbacks.ignored)
+        assertFalse(controller.isArmed())
+    }
+
+    @Test
+    fun `wake word and command in one utterance runs the command`() = runTest {
+        val controller = controller(this)
+        val callbacks = RecordingCallbacks()
+        controller.start(callbacks)
+
+        controller.onFinalTranscript("hey heretic, what is on my calendar")
+
+        assertEquals(listOf("what is on my calendar" to true), callbacks.commands)
+        assertEquals(1, callbacks.wakes.size)
+    }
+
+    @Test
+    fun `a command inside an already open window does not need the wake word again`() = runTest {
+        val controller = controller(this)
+        val callbacks = RecordingCallbacks()
+        controller.start(callbacks)
+
+        controller.onFinalTranscript("heretic")
+        controller.onFinalTranscript("set a timer for ten minutes")
+
+        assertEquals(
+            listOf("set a timer for ten minutes" to false),
+            callbacks.commands,
+        )
+    }
+
+    @Test
+    fun `shaz is the absolute interrupt and fires even while the assistant is busy`() = runTest {
+        val controller = controller(this)
+        val callbacks = RecordingCallbacks()
+        controller.start(callbacks)
+        controller.markBusy(true)
+
+        controller.onFinalTranscript("shaz")
+
+        assertEquals(1, callbacks.interrupts)
+        assertTrue(callbacks.commands.isEmpty())
+        assertTrue(callbacks.ignored.isEmpty())
+    }
+
+    @Test
+    fun `shaz also interrupts when no wake word was ever heard`() = runTest {
+        val controller = controller(this, gate = WakeSessionGate(wakeWordRequired = true))
+        val callbacks = RecordingCallbacks()
+        controller.start(callbacks)
+
+        controller.onFinalTranscript("shaz")
+
+        assertEquals(1, callbacks.interrupts)
+        // A stop word is not a wake: the window stays shut and the mic stays open.
+        assertFalse(controller.isArmed())
+        assertEquals(0, controller.wakeCount.value)
+    }
+
+    @Test
+    fun `markBusy keeps the state busy while an answer is playing`() = runTest {
+        val controller = controller(this)
+        val callbacks = RecordingCallbacks()
+        controller.start(callbacks)
+        controller.onFinalTranscript("heretic")
+
+        controller.markBusy(true)
+
+        assertEquals(WakeState.BUSY, controller.state.value)
+    }
+
+    @Test
+    fun `the wake window closes on its own`() = runTest {
+        var now = 1_000L
+        val controller = controller(this, clock = { now })
+        val callbacks = RecordingCallbacks()
+        controller.start(callbacks)
+
+        controller.onFinalTranscript("heretic")
+        assertTrue(controller.isArmed())
+
+        now += WakeWordDetector.DEFAULT_AWAKE_WINDOW_MS + 10
+        advanceTimeBy(WakeWordDetector.DEFAULT_AWAKE_WINDOW_MS + 100)
+        runCurrent()
+
+        assertFalse(controller.isArmed())
+        assertEquals(WakeState.STANDBY, controller.state.value)
+    }
+
+    @Test
+    fun `stop closes the microphone and the window`() = runTest {
+        val capture = mock<AudioCaptureSource>()
+        val integrator = realIntegrator(this)
+        val controller = controller(this, capture = capture, integrator = integrator)
+        controller.start(RecordingCallbacks())
+        controller.onFinalTranscript("heretic")
+        assertTrue(integrator.isTranscribingNow)
+
+        controller.stop()
+
+        assertFalse(controller.isListening)
+        assertFalse(controller.isArmed())
+        assertFalse(integrator.isTranscribingNow)
+        assertEquals(WakeState.OFF, controller.state.value)
+        verify(capture).stop()
+    }
+
+    @Test
+    fun `a partial hypothesis arms the chip without opening the window`() = runTest {
+        val controller = controller(this)
+        val callbacks = RecordingCallbacks()
+        controller.start(callbacks)
+
+        controller.onPartialHypothesis("heret")
+
+        assertTrue(controller.partialArmed.value)
+        assertEquals(listOf("heret"), callbacks.partials)
+        assertFalse("a partial must never open the window", controller.isArmed())
+    }
+
+    @Test
+    fun `requiring no wake word runs every transcript`() = runTest {
+        val controller = controller(this, gate = WakeSessionGate(wakeWordRequired = false))
+        val callbacks = RecordingCallbacks()
+        controller.start(callbacks)
+
+        controller.onFinalTranscript("what is the battery level")
+
+        assertEquals(listOf("what is the battery level" to false), callbacks.commands)
+    }
+
+    @Test
+    fun `turning the requirement off mid-session stops dropping ambient speech`() = runTest {
+        val controller = controller(this)
+        val callbacks = RecordingCallbacks()
+        controller.start(callbacks)
+        controller.onFinalTranscript("turn the light on")
+        assertTrue(callbacks.commands.isEmpty())
+
+        controller.setWakeWordRequired(false)
+        controller.onFinalTranscript("turn the light on")
+
+        assertEquals(listOf("turn the light on" to false), callbacks.commands)
+    }
+
+    @Test
+    fun `armNow from the wake chip opens the window`() = runTest {
+        val controller = controller(this)
+        val callbacks = RecordingCallbacks()
+        controller.start(callbacks)
+
+        controller.armNow()
+        advanceUntilIdle()
+
+        assertTrue(controller.isArmed())
+        assertEquals(1, controller.wakeCount.value)
+        assertTrue(callbacks.wakes.isEmpty())
+    }
+
+    @Test
+    fun `sleepNow closes the window immediately`() = runTest {
+        val controller = controller(this)
+        val callbacks = RecordingCallbacks()
+        controller.start(callbacks)
+        controller.armNow()
+
+        controller.sleepNow()
+
+        assertFalse(controller.isArmed())
+        assertEquals(0L, controller.remainingWindowMs())
+    }
+
+    @Test
+    fun `a stop while listening keeps the loop alive`() = runTest {
+        val controller = controller(this)
+        val callbacks = RecordingCallbacks()
+        controller.start(callbacks)
+        controller.markBusy(true)
+
+        controller.onFinalTranscript("shaz")
+
+        verify(callbacks, never()).onWakeAcknowledged()
+        assertTrue("shaz must not tear down the microphone", controller.isListening)
+        assertEquals(1, callbacks.interrupts)
+    }
+}

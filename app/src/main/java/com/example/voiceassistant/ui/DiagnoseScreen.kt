@@ -561,7 +561,7 @@ private fun AudioLevelBar(levelDb: Float) {
                     .fillMaxWidth(fraction = normalized)
                     .height(16.dp)
                     .background(color)
-            )
+            ) { }
         }
     }
 }
@@ -583,7 +583,7 @@ private fun MicStatusPill(levelDb: Float, framesDelivered: Long, ticker: Long) {
                 .size(12.dp)
                 .clip(RoundedCornerShape(6.dp))
                 .background(color)
-        )
+        ) { }
         Text(label, style = MaterialTheme.typography.labelLarge, color = color)
     }
     // ticker is read to anchor the recomposition; the param keeps it in the recompose path.

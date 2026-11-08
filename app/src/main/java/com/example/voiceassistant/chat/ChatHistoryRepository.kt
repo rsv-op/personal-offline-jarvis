@@ -1,6 +1,8 @@
 package com.example.voiceassistant.chat
 
 import com.example.voiceassistant.generation.LocalTextGenerator
+import com.example.voiceassistant.generation.RagPromptComposer
+import com.example.voiceassistant.rag.RagContext
 import kotlinx.coroutines.flow.Flow
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -40,10 +42,21 @@ class ChatHistoryRepository @Inject constructor(
      * transcript. If generation throws, the placeholder is updated with the
      * error so the transcript never keeps a dangling pending row.
      */
-    suspend fun runTurn(userText: String): String {
+    suspend fun runTurn(userText: String): String = runTurn(userText, context = null)
+
+    /**
+     * Runs one retrieval-augmented turn.
+     *
+     * When [context] holds excerpts they are composed into the prompt with
+     * [RagPromptComposer] — the same shape the voice path uses — and the placeholder reply
+     * is created *with the source list already attached*, so a process death mid-answer
+     * still leaves a record of which documents answered the question.
+     */
+    suspend fun runTurn(userText: String, context: RagContext?): String {
+        val prompt = RagPromptComposer.compose(context, userText)
         val replyId = dao.beginTurn(userText, System.currentTimeMillis())
         return try {
-            val reply = textGenerator.generateReply(userText)
+            val reply = textGenerator.generateReply(prompt)
             dao.completeReply(replyId, reply)
             reply
         } catch (error: Exception) {
