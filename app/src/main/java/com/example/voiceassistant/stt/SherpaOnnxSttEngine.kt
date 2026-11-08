@@ -2,6 +2,8 @@ package com.example.voiceassistant.stt
 
 import android.util.Log
 import com.example.voiceassistant.memory.DeviceMemory
+import com.k2fsa.sherpa.onnx.EndpointConfig
+import com.k2fsa.sherpa.onnx.EndpointRule
 import com.k2fsa.sherpa.onnx.FeatureConfig
 import com.k2fsa.sherpa.onnx.OnlineModelConfig
 import com.k2fsa.sherpa.onnx.OnlineRecognizer
@@ -33,17 +35,16 @@ import javax.inject.Inject
  * size with no measurable accuracy loss on the 20M English model, and they
  * fit comfortably under the 1.5 GB free-RAM budget on the target device.
  *
- * ## Why the constructor-and-fields style
+ * ## Why the builder chain (and why positional arguments)
  *
- * sherpa-onnx 1.13.8 exposes its configuration as **plain Kotlin classes with
- * public mutable properties** (`FeatureConfig(sampleRate = …)`,
- * `OnlineModelConfig(transducer = …, tokens = …)`) — there is no
- * `FeatureConfig.builder()` in the published AAR. An earlier revision of this
- * file used a builder chain copied from an unrelated JNI sample; it compiled
- * against nothing and would have thrown `NoSuchMethodError` on device. The
- * class below is written against the shipped JVM API
- * (the `kotlin-api` sources at tag `v1.13.8`), which is what the
- * `com.github.k2-fsa:sherpa-onnx` artefact actually contains.
+ * The classes the AAR ships are **Java** classes generated from
+ * `sherpa-onnx/java-api` at tag `v1.13.8`: every config is immutable and carries a
+ * nested `Builder` (`FeatureConfig.builder().setSampleRate(…).build()`), and the
+ * builders expose setter-style method names. Kotlin therefore has to call them
+ * positionally — `FeatureConfig(sampleRate = 16_000)` is not a constructor that
+ * exists, and named arguments on a Java method are a compile error. The Kotlin
+ * `kotlin-api` sources in the same repository are *samples*, not the published
+ * artefact; they are not on the classpath of this module.
  *
  * ## Streaming protocol
  *
@@ -107,51 +108,73 @@ class SherpaOnnxSttEngine @Inject constructor(
         // gigaspeech / librispeech zipformer transducers were trained on.
         // Dither is left at 0 — we feed already-clean device microphone
         // audio, and dithering a live signal costs accuracy.
-        val featureConfig = FeatureConfig(
-            sampleRate = SAMPLE_RATE_HZ,
-            featureDim = FEATURE_DIM,
-            dither = 0.0f,
-        )
+        val featureConfig = FeatureConfig.builder()
+            .setSampleRate(SAMPLE_RATE_HZ)
+            .setFeatureDim(FEATURE_DIM)
+            .setDither(0.0f)
+            .build()
 
-        val transducer = OnlineTransducerModelConfig(
-            encoder = encoder.absolutePath,
-            decoder = decoder.absolutePath,
-            joiner = joiner.absolutePath,
-        )
+        val transducer = OnlineTransducerModelConfig.builder()
+            .setEncoder(encoder.absolutePath)
+            .setDecoder(decoder.absolutePath)
+            .setJoiner(joiner.absolutePath)
+            .build()
 
-        val modelConfig = OnlineModelConfig(
-            transducer = transducer,
-            tokens = tokens.absolutePath,
-            // Two threads is the sweet spot on a mid-range ARM64 phone:
-            // the int8 zipformer decodes ~8× real time on two cores and
-            // leaves the other cores for llama.cpp when the user is in a
-            // conversation.
-            numThreads = 2,
-            // "cpu" only. sherpa-onnx 1.13.8 also understands "nnapi" and
-            // "xnnpack", but the NNAPI compatibility matrix is a support
-            // burden with no benefit for a 20M-parameter streaming model,
-            // and the whole app is explicitly CPU-only for determinism.
-            provider = "cpu",
-            debug = false,
-            modelType = "transducer",
-        )
+        val modelConfig = OnlineModelConfig.builder()
+            .setTransducer(transducer)
+            .setTokens(tokens.absolutePath)
+            // Two threads is the sweet spot on a mid-range ARM64 phone: the
+            // int8 zipformer decodes ~8× real time on two cores and leaves the
+            // rest for llama.cpp when the user is mid-conversation.
+            .setNumThreads(2)
+            // "cpu" only. 1.13.8 also understands "nnapi"/"xnnpack", but the
+            // NNAPI compatibility matrix is a support burden with no benefit
+            // for a 20M-parameter streaming model, and the app is
+            // deliberately CPU-only so decoding is deterministic.
+            .setProvider("cpu")
+            .setDebug(false)
+            .setModelType("transducer")
+            .build()
 
-        val config = OnlineRecognizerConfig(
-            featConfig = featureConfig,
-            modelConfig = modelConfig,
+        // Endpointing is what tells [OfflineSttIntegrator] the utterance
+        // finished. Rule 1 fires on 2.4 s of trailing silence (a real pause),
+        // rule 2 on 1.2 s once speech has been heard (the normal end of a
+        // command), and rule 3 caps a monologue at 20 s so an open microphone
+        // cannot grow an utterance without bound.
+        val endpointConfig = EndpointConfig.builder()
+            .setRule1(
+                EndpointRule.builder()
+                    .setMustContainNonSilence(false)
+                    .setMinTrailingSilence(2.4f)
+                    .setMinUtteranceLength(0.0f)
+                    .build()
+            )
+            .setRule2(
+                EndpointRule.builder()
+                    .setMustContainNonSilence(true)
+                    .setMinTrailingSilence(1.2f)
+                    .setMinUtteranceLength(0.0f)
+                    .build()
+            )
+            .setRule3(
+                EndpointRule.builder()
+                    .setMustContainNonSilence(false)
+                    .setMinTrailingSilence(0.0f)
+                    .setMinUtteranceLength(20.0f)
+                    .build()
+            )
+            .build()
+
+        val config = OnlineRecognizerConfig.builder()
+            .setFeatureConfig(featureConfig)
+            .setOnlineModelConfig(modelConfig)
+            .setEndpointConfig(endpointConfig)
             // Greedy search is the low-latency streaming decoder. Modified
-            // beam search needs complete utterances, which we do not have
-            // in a hands-free loop.
-            decodingMethod = "greedy_search",
-            // Endpointing is what tells [OfflineSttIntegrator] that the
-            // utterance finished. The trailing-silence window is set so a
-            // natural pause between two sentences does not cut the user
-            // off mid-command.
-            enableEndpoint = true,
-            rule1MinTrailingSilence = 2.4f,
-            rule2MinTrailingSilence = 1.2f,
-            rule3MinUtteranceLength = 20f,
-        )
+            // beam search needs complete utterances, which a hands-free loop
+            // never has.
+            .setDecodingMethod("greedy_search")
+            .setEnableEndpoint(true)
+            .build()
 
         try {
             val created = OnlineRecognizer(config)
