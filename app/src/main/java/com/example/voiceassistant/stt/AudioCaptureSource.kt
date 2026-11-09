@@ -53,7 +53,8 @@ open class AudioCaptureSource @Inject constructor(
     open val frames: SharedFlow<ShortArray> = _frames.asSharedFlow()
 
     private val _errors = MutableSharedFlow<Throwable>(extraBufferCapacity = 1)
-    val errors: SharedFlow<Throwable> = _errors.asSharedFlow()
+    /** The capture errors, `open` for the same reason as [frames]. */
+    open val errors: SharedFlow<Throwable> = _errors.asSharedFlow()
 
     /**
      * Most-recent 100 ms frame's level, in dBFS (-60..0). The diagnose screen reads this
