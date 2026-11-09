@@ -103,13 +103,67 @@ jobs:
         with:
           gradle-version: '8.14.6'
 
-      - name: Run unit tests and assemble the APK
-        id: gradle
+      - name: Compile the app and its unit tests
+        # Split from the run below on purpose. A single `gradle :app:testDebugUnitTest
+        # :app:assembleDebug` invocation hides which of the three phases (compile, test,
+        # package) a hang belongs to; when the tests spin, the job sits in one opaque
+        # step for hours. Each phase now has its own step and its own timeout, so a
+        # stalled test surfaces as a named failure in minutes.
+        id: gradle_compile
+        timeout-minutes: 45
         env:
           JARVIS_VERSION_CODE: ${{ github.run_number }}
         run: |
           set -o pipefail
-          gradle --no-daemon --stacktrace :app:testDebugUnitTest :app:assembleDebug 2>&1 | tee /tmp/gradle.log
+          gradle --no-daemon --stacktrace \
+            :app:compileDebugKotlin \
+            :app:compileDebugUnitTestKotlin 2>&1 | tee /tmp/gradle-compile.log
+
+      - name: Run the unit tests
+        id: gradle_test
+        # The test JVM is the step that can spin forever: Robolectric + Compose
+        # tests share a fork with the plain JVM tests, and a single never-idle
+        # composition blocks the whole suite. 25 minutes is ~6x the observed
+        # duration of a healthy run, so a timeout here means "a test hangs",
+        # not "the runner is slow".
+        timeout-minutes: 25
+        env:
+          JARVIS_VERSION_CODE: ${{ github.run_number }}
+        run: |
+          set -o pipefail
+          timeout --signal=QUIT --kill-after=60s 1200 \
+            gradle --no-daemon --stacktrace :app:testDebugUnitTest \
+            2>&1 | tee /tmp/gradle-test.log
+
+      - name: Assemble the debug APK
+        id: gradle_assemble
+        timeout-minutes: 45
+        env:
+          JARVIS_VERSION_CODE: ${{ github.run_number }}
+        run: |
+          set -o pipefail
+          gradle --no-daemon --stacktrace :app:assembleDebug \
+            2>&1 | tee /tmp/gradle-assemble.log
+
+      - name: Combine the Gradle logs
+        if: always()
+        run: |
+          # The annotation reporter reads one file; keep its input shape stable.
+          : > /tmp/gradle.log
+          for f in /tmp/gradle-compile.log /tmp/gradle-test.log /tmp/gradle-assemble.log; do
+            [ -f "$f" ] && cat "$f" >> /tmp/gradle.log
+          done
+          wc -l /tmp/gradle.log || true
+
+      - name: Dump the test thread stacks when the tests time out
+        # `timeout --signal=QUIT` makes the Gradle daemon-less JVM print a full
+        # thread dump, which is the only way to see *which* test is stuck.
+        if: failure() && steps.gradle_test.outcome == 'failure'
+        run: |
+          echo '=== last 200 lines of the test log ==='
+          tail -n 200 /tmp/gradle-test.log || true
+          echo '=== test result XML files (names only) ==='
+          find app/build/test-results -name '*.xml' 2>/dev/null | sort || true
 
       - name: Surface failures as check annotations
         # Gradle logs and artifacts live behind signed storage URLs that cannot always be

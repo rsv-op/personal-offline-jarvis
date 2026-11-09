@@ -128,6 +128,27 @@ android {
 
     testOptions {
         unitTests.isIncludeAndroidResources = true
+
+        // Print every test as it starts and finishes.
+        //
+        // The suite mixes plain JVM tests with Robolectric + Compose tests in one
+        // fork, so a single composition that never reaches idle blocks *every*
+        // later test with no output at all. With per-test logging the last line in
+        // the CI log names the offender instead of leaving a silent hour.
+        unitTests.all { test ->
+            test.testLogging {
+                events("started", "passed", "failed", "skipped")
+                exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+                showStandardStreams = false
+            }
+            // Robolectric + Compose needs a bigger heap than the 512 MB default;
+            // without it the GC thrashes and a slow suite can look like a hang.
+            test.maxHeapSize = "2g"
+            // A forked JVM per class costs a little startup time and buys full
+            // isolation: one wedged composition cannot take the rest of the suite
+            // down with it, and a class that dies leaves the others' results intact.
+            test.forkEvery = 1
+        }
     }
 
     lint {
