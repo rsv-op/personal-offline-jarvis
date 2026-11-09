@@ -112,7 +112,19 @@ object WakeWordDetector {
             for (candidate in candidates) {
                 val distance = editDistance(candidate, name)
                 val ratio = 1f - distance.toFloat() / maxOf(candidate.length, name.length)
+                // A prefix of the name is *progress*, not a near-miss: "heret" is five
+                // sevenths of "heretic" and still two edits away, so the Levenshtein ratio
+                // alone (0.57) never arms the chip while the user is still saying the word.
+                // Prefixes are scored on how much of the name has arrived, with a floor high
+                // enough that a two- or three-letter fragment of ordinary speech ("her",
+                // "he") does not flicker the chip.
+                val prefixRatio = if (name.startsWith(candidate) && candidate.isNotEmpty()) {
+                    PREFIX_SCORE_BASE + (1f - PREFIX_SCORE_BASE) * candidate.length / name.length
+                } else {
+                    0f
+                }
                 if (ratio > best) best = ratio
+                if (prefixRatio > best) best = prefixRatio
             }
         }
         return best.coerceIn(0f, 1f)
@@ -120,6 +132,13 @@ object WakeWordDetector {
 
     /** Score needed before a partial hypothesis is treated as a probable wake word. */
     const val PARTIAL_MATCH_THRESHOLD = 0.78f
+
+    /**
+     * Score floor for a candidate that is a prefix of a wake word. With 0.5, a prefix arms
+     * the chip once it covers ~55% of the name ("here" of "heretic"), while "her" stays
+     * below the threshold: the chip is feedback, and false positives make it noise.
+     */
+    private const val PREFIX_SCORE_BASE = 0.5f
 
     // --------------------------------------------------------------- internals
 
@@ -130,8 +149,16 @@ object WakeWordDetector {
         .replace(Regex("[\\s]+"), " ")
         .trim()
 
+    /**
+     * True when [text] is a stop phrase *in full*.
+     *
+     * The match is anchored on purpose. An unanchored `startsWith` let the trailing half of
+     * the rule ("shaz") also match the *leading* half of an ordinary sentence, so a reply
+     * beginning with the name was classified as an interrupt and dropped: "Heretic, what is
+     * the battery level" became `ImmediateStop` before the name matcher ever ran.
+     */
     private fun isStopPhrase(text: String): Boolean =
-        STOP_PHRASES.any { phrase -> text == phrase || text.startsWith("$phrase ") || text.endsWith(" $phrase") }
+        STOP_PHRASES.any { phrase -> text == phrase || text.endsWith(" $phrase") }
 
     /**
      * Matches "heretic", "hey heretic", "okay jarvis", "heretics", "hey, heretic!".
@@ -243,11 +270,23 @@ class WakeSessionGate(
         armedAt = 0L
     }
 
+    /**
+     * The state to show for [busy]/[listening] at [nowMs].
+     *
+     * [nowMs] is a parameter, not a call to the wall clock: the controller drives this class
+     * with an injectable clock, and reading `System.currentTimeMillis()` here made the two
+     * disagree — under a test clock the gate was armed for 20 s of gate-time while `state()`
+     * compared against wall time and reported STANDBY, so the chip lied.
+     */
     @Synchronized
-    fun state(busy: Boolean, listening: Boolean): WakeState = when {
+    fun state(
+        busy: Boolean,
+        listening: Boolean,
+        nowMs: Long = System.currentTimeMillis(),
+    ): WakeState = when {
         !listening -> WakeState.OFF
         busy -> WakeState.BUSY
-        isArmed() -> WakeState.ARMED
+        isArmed(nowMs) -> WakeState.ARMED
         else -> WakeState.STANDBY
     }
 

@@ -147,16 +147,19 @@ class WakeWordDetectorTest {
 
     @Test
     fun `the window state is reported for the UI`() {
-        var now = 5_000L
+        // `now` is 5_000: nowhere near the wall clock, which is the point — the gate must
+        // report the state for the time it is *given*, not for the system clock, or the
+        // chip in the UI disagrees with the window the controller armed.
+        val now = 5_000L
         val gate = WakeSessionGate(awakeWindowMs = 20_000L)
-        assertEquals(WakeState.OFF, gate.state(busy = false, listening = false))
-        assertEquals(WakeState.STANDBY, gate.state(busy = false, listening = true))
+        assertEquals(WakeState.OFF, gate.state(busy = false, listening = false, nowMs = now))
+        assertEquals(WakeState.STANDBY, gate.state(busy = false, listening = true, nowMs = now))
         gate.arm(now)
-        assertEquals(WakeState.ARMED, gate.state(busy = false, listening = true))
-        assertEquals(WakeState.BUSY, gate.state(busy = true, listening = true))
+        assertEquals(WakeState.ARMED, gate.state(busy = false, listening = true, nowMs = now))
+        assertEquals(WakeState.BUSY, gate.state(busy = true, listening = true, nowMs = now))
         assertEquals(20_000L, gate.remainingMs(now))
         gate.sleep()
-        assertEquals(WakeState.STANDBY, gate.state(busy = false, listening = true))
+        assertEquals(WakeState.STANDBY, gate.state(busy = false, listening = true, nowMs = now))
         assertEquals(0L, gate.remainingMs(now))
     }
 
@@ -168,6 +171,29 @@ class WakeWordDetectorTest {
         assertTrue("score was $score", score >= WakeWordDetector.PARTIAL_MATCH_THRESHOLD)
         assertTrue(WakeWordDetector.partialScore("and then we") < 0.5f)
         assertTrue(WakeWordDetector.partialScore("") == 0f)
+    }
+
+    @Test
+    fun `a partial on its way to the name arms the chip, but a two-letter fragment does not`() {
+        // "here" is 4/7 of "heretic": a prefix, not a near miss, so it must score high even
+        // though the edit distance from "here" to "heretic" is three.
+        val partial = WakeWordDetector.partialScore("here")
+        assertTrue("score was $partial", partial >= WakeWordDetector.PARTIAL_MATCH_THRESHOLD)
+        assertTrue(
+            "a bare fragment must not flicker the chip",
+            WakeWordDetector.partialScore("her") < WakeWordDetector.PARTIAL_MATCH_THRESHOLD,
+        )
+    }
+
+    @Test
+    fun `a wake word followed by a command is not mistaken for a stop phrase`() {
+        // Regression: an unanchored stop-phrase match treated any sentence *starting* with
+        // "shaz" — including "Heretic, shaz …" — correctly, but it also classified a
+        // name-first sentence as an interrupt through the trailing half of the rule.
+        val result = WakeWordDetector.detect("Heretic, what is the battery level")
+        assertEquals(WakeWordDetector.Result.WakeWithCommand("what is the battery level"), result)
+        // The stop word still wins wherever it really is the whole utterance.
+        assertEquals(WakeWordDetector.Result.ImmediateStop, WakeWordDetector.detect("shaz"))
     }
 
     @Test

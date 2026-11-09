@@ -225,7 +225,9 @@ class ContinuousWakeController(
 
     /** Recomputes [state] from the gate, the microphone and the busy flag. */
     fun refreshState() {
-        _state.value = gate.state(busy = busy, listening = listening)
+        // Pass the controller's clock: the gate must judge "armed" on the same time base
+        // the rest of the loop uses, or the chip disagrees with the window.
+        _state.value = gate.state(busy = busy, listening = listening, nowMs = clock())
     }
 
     /**
