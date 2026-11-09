@@ -149,20 +149,33 @@ jobs:
       - name: Run the Android-dependent unit tests
         id: gradle_test_android
         if: success() || failure()
-        # Robolectric + Compose: the half that used to spin forever. It runs as its own
-        # step so its log and its timeout are separate from the JVM-only tests.
-        timeout-minutes: 20
+        # Robolectric + Compose: the half that used to spin forever. It is run one package
+        # at a time, each in its own `timeout`, so a package that wedges cannot hide the
+        # results of the other three — the summary lines ("PASS ui") name the offender in
+        # one round even when the run has to be killed.
+        timeout-minutes: 30
         env:
           JARVIS_VERSION_CODE: ${{ github.run_number }}
         run: |
           set -o pipefail
-          timeout --signal=QUIT --kill-after=60s 900 \
-            gradle --no-daemon --stacktrace :app:testDebugUnitTest \
-              --tests 'com.example.voiceassistant.orchestrator.*' \
-              --tests 'com.example.voiceassistant.rag.*' \
-              --tests 'com.example.voiceassistant.ui.*' \
-              --tests 'com.example.voiceassistant.wake.*' \
-            2>&1 | tee /tmp/gradle-test-android.log
+          : > /tmp/gradle-test-android.log
+          failed=0
+          for pkg in orchestrator rag ui wake; do
+            echo "=== $pkg ===" | tee -a /tmp/gradle-test-android.log
+            if timeout --signal=QUIT --kill-after=20s 360 \
+                 gradle --no-daemon --stacktrace :app:testDebugUnitTest \
+                   --tests "com.example.voiceassistant.$pkg.*" \
+                 >> /tmp/gradle-test-android.log 2>&1; then
+              echo "PASS $pkg"
+            else
+              echo "FAIL $pkg"
+              failed=1
+            fi
+            # A killed Gradle leaves its worker JVM behind holding the test classes.
+            pkill -f GradleWorkerMain || true
+            pkill -f 'GradleDaemon' || true
+          done
+          exit $failed
 
       - name: Assemble the debug APK
         id: gradle_assemble
@@ -227,6 +240,13 @@ jobs:
                   "Gradle failure digest",
                   [line for line in log.read_text(errors="replace").splitlines() if pattern.search(line)],
               )
+
+          # 1b) The tail of the Android half. When that step is killed it produces no XML
+          # at all, and the last "started" line here is the test that wedged.
+          android_log = pathlib.Path("/tmp/gradle-test-android.log")
+          if android_log.is_file():
+              tail = android_log.read_text(errors="replace").splitlines()[-60:]
+              emit("Android test log tail", tail)
 
           # 2) Test failures, grouped by class.
           results = pathlib.Path("app/build/test-results/testDebugUnitTest")

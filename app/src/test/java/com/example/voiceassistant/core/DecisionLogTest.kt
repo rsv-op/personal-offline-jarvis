@@ -125,8 +125,9 @@ class DecisionLogTest {
             )
         }
         assertNull(log.verifyChain())
-        // Three seeded grants plus the "log opened" note, then four retrievals.
-        assertEquals(8L, log.lineCount())
+        // Three seeded grants, the "log opened" note, then four retrievals. The count is
+        // an Int — comparing against 8L fails on the boxed type, not the number.
+        assertEquals(8, log.lineCount())
     }
 
     @Test
@@ -140,8 +141,12 @@ class DecisionLogTest {
         )
         val file = log.logFile!!
         val lines = file.readLines().toMutableList()
-        // Change the outcome of the middle record without recomputing its hash.
-        val target = lines.lastIndex / 2
+        // Pick a line that actually has a LOGGED outcome instead of guessing an index:
+        // the seed writes GRANTED records, so "the middle line" was often a grant and the
+        // replace below was a no-op — the chain stayed valid and this test failed for the
+        // wrong reason.
+        val target = lines.indexOfLast { it.contains("\"LOGGED\"") }
+        assertTrue("the log must contain at least one LOGGED record", target >= 0)
         lines[target] = lines[target].replace("\"LOGGED\"", "\"DENIED\"")
         file.writeText(lines.joinToString("\n", postfix = "\n"))
 
