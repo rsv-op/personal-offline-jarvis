@@ -103,13 +103,117 @@ jobs:
         with:
           gradle-version: '8.14.6'
 
-      - name: Run unit tests and assemble the APK
-        id: gradle
+      - name: Compile the app and its unit tests
+        # Split from the run below on purpose. A single `gradle :app:testDebugUnitTest
+        # :app:assembleDebug` invocation hides which of the three phases (compile, test,
+        # package) a hang belongs to; when the tests spin, the job sits in one opaque
+        # step for hours. Each phase now has its own step and its own timeout, so a
+        # stalled test surfaces as a named failure in minutes.
+        id: gradle_compile
+        timeout-minutes: 45
         env:
           JARVIS_VERSION_CODE: ${{ github.run_number }}
         run: |
           set -o pipefail
-          gradle --no-daemon --stacktrace :app:testDebugUnitTest :app:assembleDebug 2>&1 | tee /tmp/gradle.log
+          gradle --no-daemon --stacktrace \
+            :app:compileDebugKotlin \
+            :app:compileDebugUnitTestKotlin 2>&1 | tee /tmp/gradle-compile.log
+
+      - name: Run the plain unit tests
+        id: gradle_test
+        # Both halves run even when the other fails, so one CI round reports every
+        # broken test instead of one half at a time.
+        if: success() || failure()
+        # The suite is split in two so a wedged Compose composition cannot hide the
+        # plain JVM tests (and vice versa). Both halves are cheap on their own; the
+        # per-test `--tests` selection below is what keeps the log readable.
+        timeout-minutes: 15
+        env:
+          JARVIS_VERSION_CODE: ${{ github.run_number }}
+        run: |
+          set -o pipefail
+          timeout --signal=QUIT --kill-after=60s 600 \
+            gradle --no-daemon --stacktrace :app:testDebugUnitTest \
+              --tests 'com.example.voiceassistant.aimatrix.*' \
+              --tests 'com.example.voiceassistant.chat.*' \
+              --tests 'com.example.voiceassistant.core.*' \
+              --tests 'com.example.voiceassistant.generation.*' \
+              --tests 'com.example.voiceassistant.memory.*' \
+              --tests 'com.example.voiceassistant.nlp.*' \
+              --tests 'com.example.voiceassistant.statemachine.*' \
+              --tests 'com.example.voiceassistant.stt.*' \
+              --tests 'com.example.voiceassistant.telematics.*' \
+              --tests 'com.example.voiceassistant.vault.*' \
+            2>&1 | tee /tmp/gradle-test.log
+
+      - name: Run the Android-dependent unit tests
+        id: gradle_test_android
+        if: success() || failure()
+        # Robolectric + Compose: the half that used to spin forever. It is run one package
+        # at a time, each in its own `timeout`, so a package that wedges cannot hide the
+        # results of the other three — the summary lines ("PASS ui") name the offender in
+        # one round even when the run has to be killed.
+        timeout-minutes: 30
+        env:
+          JARVIS_VERSION_CODE: ${{ github.run_number }}
+        run: |
+          set -o pipefail
+          : > /tmp/gradle-test-android.log
+          failed=0
+          for pkg in orchestrator rag ui wake; do
+            echo "=== $pkg ===" | tee -a /tmp/gradle-test-android.log
+            if timeout --signal=QUIT --kill-after=20s 360 \
+                 gradle --no-daemon --stacktrace :app:testDebugUnitTest \
+                   --tests "com.example.voiceassistant.$pkg.*" \
+                 >> /tmp/gradle-test-android.log 2>&1; then
+              echo "PASS $pkg" | tee -a /tmp/gradle-test-android.log
+            else
+              echo "FAIL $pkg" | tee -a /tmp/gradle-test-android.log
+              failed=1
+            fi
+            # Every invocation rewrites app/build/test-results, so the previous package's
+            # reports have to be moved out of the way or the annotations only ever describe
+            # the last package that ran.
+            mkdir -p "/tmp/test-results/$pkg"
+            cp -r app/build/test-results/testDebugUnitTest/*.xml \
+              "/tmp/test-results/$pkg/" 2>/dev/null || true
+            # A killed Gradle leaves its worker JVM behind holding the test classes.
+            pkill -f GradleWorkerMain || true
+            pkill -f 'GradleDaemon' || true
+          done
+          exit $failed
+
+      - name: Assemble the debug APK
+        id: gradle_assemble
+        timeout-minutes: 45
+        env:
+          JARVIS_VERSION_CODE: ${{ github.run_number }}
+        run: |
+          set -o pipefail
+          gradle --no-daemon --stacktrace :app:assembleDebug \
+            2>&1 | tee /tmp/gradle-assemble.log
+
+      - name: Combine the Gradle logs
+        if: always()
+        run: |
+          # The annotation reporter reads one file; keep its input shape stable.
+          : > /tmp/gradle.log
+          for f in /tmp/gradle-compile.log /tmp/gradle-test.log /tmp/gradle-test-android.log /tmp/gradle-assemble.log; do
+            [ -f "$f" ] && cat "$f" >> /tmp/gradle.log
+          done
+          wc -l /tmp/gradle.log || true
+
+      - name: Dump the test thread stacks when the tests time out
+        # `timeout --signal=QUIT` makes the Gradle daemon-less JVM print a full
+        # thread dump, which is the only way to see *which* test is stuck.
+        if: failure() && (steps.gradle_test.outcome == 'failure' || steps.gradle_test_android.outcome == 'failure')
+        run: |
+          echo '=== last 100 lines of the plain test log ==='
+          tail -n 100 /tmp/gradle-test.log || true
+          echo '=== last 200 lines of the Android test log ==='
+          tail -n 200 /tmp/gradle-test-android.log || true
+          echo '=== test result XML files (names only) ==='
+          find app/build/test-results -name '*.xml' 2>/dev/null | sort || true
 
       - name: Surface failures as check annotations
         # Gradle logs and artifacts live behind signed storage URLs that cannot always be
@@ -143,11 +247,26 @@ jobs:
                   [line for line in log.read_text(errors="replace").splitlines() if pattern.search(line)],
               )
 
+          # 1b) The tail of the Android half. When that step is killed it produces no XML
+          # at all, and the last "started" line here is the test that wedged.
+          android_log = pathlib.Path("/tmp/gradle-test-android.log")
+          if android_log.is_file():
+              lines = android_log.read_text(errors="replace").splitlines()
+              # The per-package verdicts first: they say which package the rest belongs to.
+              emit("Android packages", [l for l in lines if re.match(r"^(PASS|FAIL) ", l)])
+              emit("Android test log tail", lines[-80:])
+
           # 2) Test failures, grouped by class.
-          results = pathlib.Path("app/build/test-results/testDebugUnitTest")
+          # Both the live directory and the per-package copies (the Android half is run
+          # one package at a time, and each run overwrites the live directory).
+          reports = []
+          for root in (pathlib.Path("app/build/test-results/testDebugUnitTest"),
+                       pathlib.Path("/tmp/test-results")):
+              if root.is_dir():
+                  reports.extend(sorted(root.rglob("*.xml")))
           by_class = {}
-          if results.is_dir():
-              for report in sorted(results.glob("*.xml")):
+          if reports:
+              for report in reports:
                   try:
                       tree = ET.parse(report)
                   except Exception:

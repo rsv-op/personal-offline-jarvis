@@ -41,6 +41,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.voiceassistant.nlp.NlpProcessor
+import com.example.voiceassistant.rag.RagSourceSummary
+import com.example.voiceassistant.wake.WakeState
 import com.example.voiceassistant.orchestrator.AssistantViewModel
 import com.example.voiceassistant.statemachine.AssistantUiState
 import com.example.voiceassistant.vault.JarvisMemory
@@ -61,7 +63,9 @@ fun AssistantApp(
     viewModel: AssistantViewModel,
     onInstallModel: () -> Unit,
     onInstallArchive: () -> Unit = {},
-    onInstallReplyModel: () -> Unit
+    onInstallReplyModel: () -> Unit,
+    onAddKnowledgeFile: () -> Unit = {},
+    onAddKnowledgeFolder: () -> Unit = {},
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val transcript by viewModel.partialTranscript.collectAsStateWithLifecycle()
@@ -80,7 +84,18 @@ fun AssistantApp(
     val isDiagnosing by viewModel.isDiagnosing.collectAsStateWithLifecycle()
     val chatMessages by viewModel.chatMessages.collectAsStateWithLifecycle()
     val streamingReply by viewModel.streamingReply.collectAsStateWithLifecycle()
+    val ragStatus by viewModel.ragStatus.collectAsStateWithLifecycle()
+    val ragSources by viewModel.ragSources.collectAsStateWithLifecycle()
+    val ragLastIngest by viewModel.ragLastIngest.collectAsStateWithLifecycle()
+    val ragBusy by viewModel.ragBusy.collectAsStateWithLifecycle()
+    val ragEnabled by viewModel.ragEnabled.collectAsStateWithLifecycle()
+    val ragTargetFilter by viewModel.ragTargetFilter.collectAsStateWithLifecycle()
+    val wakeState by viewModel.wakeState.collectAsStateWithLifecycle()
+    val handsFreeActive by viewModel.handsFreeActive.collectAsStateWithLifecycle()
+    val wakeWordRequired by viewModel.wakeWordRequired.collectAsStateWithLifecycle()
+    val wakeWindowMs by viewModel.wakeWindowMs.collectAsStateWithLifecycle()
     var showChat by remember { mutableStateOf(false) }
+    var showKnowledge by remember { mutableStateOf(false) }
 
     MaterialTheme(
         colorScheme = darkColorScheme(
@@ -97,6 +112,24 @@ fun AssistantApp(
                 viewModel = viewModel,
                 onClose = viewModel::closeDiagnostics
             )
+        } else if (showKnowledge) {
+            Box(modifier = Modifier.fillMaxSize().safeDrawingPadding()) {
+                KnowledgePanel(
+                    sources = ragSources,
+                    status = ragStatus,
+                    lastIngest = ragLastIngest,
+                    isBusy = ragBusy,
+                    enabled = ragEnabled,
+                    targetFilter = ragTargetFilter,
+                    onAddFile = onAddKnowledgeFile,
+                    onAddFolder = onAddKnowledgeFolder,
+                    onClear = viewModel::clearKnowledgeBase,
+                    onForget = viewModel::forgetKnowledgeSource,
+                    onToggleEnabled = viewModel::setKnowledgeBaseEnabled,
+                    onTargetFilterChanged = viewModel::setRagTargetFilter,
+                    onClose = { showKnowledge = false },
+                )
+            }
         } else if (showChat) {
             Box(modifier = Modifier.fillMaxSize().safeDrawingPadding()) {
                 ChatPanel(
@@ -146,7 +179,17 @@ fun AssistantApp(
                 onTeach = viewModel::teach,
                 onTeachLast = viewModel::teachLastUtterance,
                 onForget = viewModel::forgetPhrase,
-                onForgetAll = viewModel::forgetAllPhrases
+                onForgetAll = viewModel::forgetAllPhrases,
+                ragStatus = ragStatus,
+                ragSources = ragSources,
+                wakeState = wakeState,
+                handsFreeActive = handsFreeActive,
+                wakeWordRequired = wakeWordRequired,
+                wakeWindowMs = wakeWindowMs,
+                onToggleHandsFree = viewModel::toggleHandsFree,
+                onToggleWakeWord = viewModel::toggleWakeWordRequired,
+                onInterrupt = viewModel::interruptPlayback,
+                onOpenKnowledge = { showKnowledge = true },
                 )
                 TextButton(
                     onClick = { showChat = true },
@@ -189,7 +232,19 @@ fun AssistantScreen(
     onTeachLast: (String) -> Unit = {},
     onForget: (String) -> Unit = {},
     onForgetAll: () -> Unit = {},
-    onLongPress: () -> Unit = {}
+    onLongPress: () -> Unit = {},
+    // ---- hands-free wake loop (defaults keep the screen renderable in isolation) ----
+    wakeState: WakeState = WakeState.OFF,
+    handsFreeActive: Boolean = false,
+    wakeWordRequired: Boolean = true,
+    wakeWindowMs: Long = 0L,
+    onToggleHandsFree: () -> Unit = {},
+    onToggleWakeWord: () -> Unit = {},
+    onInterrupt: () -> Unit = {},
+    // ---- local knowledge base ----
+    ragStatus: String = "No documents indexed",
+    ragSources: List<RagSourceSummary> = emptyList(),
+    onOpenKnowledge: () -> Unit = {}
 ) {
     Surface(
         modifier = Modifier.fillMaxSize(),
@@ -266,6 +321,37 @@ fun AssistantScreen(
             HereticWaveform(levelDb = levelDb, modifier = Modifier.fillMaxWidth())
 
             Spacer(modifier = Modifier.height(12.dp))
+            WakeChipRow(
+                wakeState = wakeState,
+                handsFreeActive = handsFreeActive,
+                wakeWordRequired = wakeWordRequired,
+                windowMs = wakeWindowMs,
+                onToggleHandsFree = onToggleHandsFree,
+                onToggleWakeWord = onToggleWakeWord,
+                onInterrupt = onInterrupt,
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "Knowledge: $ragStatus",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
+                    modifier = Modifier.weight(1f).testTag("KnowledgeSummary"),
+                )
+                TextButton(
+                    onClick = onOpenKnowledge,
+                    modifier = Modifier.testTag("OpenKnowledgeButton"),
+                ) {
+                    Text("Documents", color = MaterialTheme.colorScheme.primary)
+                }
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
             Text(
                 text = mapStatusText(uiState),
                 style = MaterialTheme.typography.titleMedium,

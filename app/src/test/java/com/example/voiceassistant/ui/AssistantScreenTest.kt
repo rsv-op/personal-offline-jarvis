@@ -39,7 +39,13 @@ class AssistantScreenTest {
 
         composeTestRule.onNodeWithTag("StatusText").assertTextEquals("Listening offline — tap to stop")
         composeTestRule.onNodeWithTag("AssistantOrb").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("TranscriptText").assertIsDisplayed().assertTextEquals("hello")
+        // The home screen grew a wake-word chip row and a knowledge-base row, so on the
+        // small default Robolectric window the transcript can start below the fold. It is
+        // still there and still correct — scroll to it before asserting it is *displayed*.
+        composeTestRule.onNodeWithTag("TranscriptText")
+            .performScrollTo()
+            .assertIsDisplayed()
+            .assertTextEquals("hello")
     }
 
     @Test

@@ -25,14 +25,26 @@ class RuleBasedLocalTextGenerator @Inject constructor(
     private val llama: Provider<LlamaLocalTextGenerator>
 ) : LocalTextGenerator {
 
-    override suspend fun generateReply(userText: String): String = withContext(Dispatchers.Default) {
+    override suspend fun generateReply(userText: String): String =
+        generateReply(RagPromptComposer.compose(context = null, question = userText))
+
+    /**
+     * Same routing, but the prompt keeps the `Context Information: … Question: …` shape the
+     * RAG engine built. The deterministic fallback below quotes the excerpts itself, because
+     * without a language model that is the only way the user sees what was retrieved.
+     */
+    override suspend fun generateReply(prompt: RagPrompt): String = withContext(Dispatchers.Default) {
         val modelPath = llamaModelStore.installedModelPath()
         if (modelPath != null) {
             // A real model exists — the user has paid the download cost, so use it.
-            return@withContext llama.get().generateReply(userText)
+            return@withContext llama.get().generateReply(prompt)
         }
 
-        ReplyComposer.compose(userText)
+        if (prompt.usedContext) {
+            ReplyComposer.composeFromContext(prompt.userPrompt)
+        } else {
+            ReplyComposer.compose(prompt.userPrompt)
+        }
     }
 
     override suspend fun onModelUpdated(): Unit = llama.get().onModelUpdated()
@@ -44,6 +56,9 @@ class RuleBasedLocalTextGenerator @Inject constructor(
  * the tests stay deterministic by injecting fakes.
  */
 internal object ReplyComposer {
+
+    /** Longest verbatim quote the fallback will read back; keeps a reply listenable. */
+    private const val MAX_QUOTED_CHARACTERS = 600
 
     private val greetingTriggers = setOf(
         "hi", "hello", "hey", "hi there", "hello there", "good morning", "good evening", "good afternoon"
@@ -58,6 +73,33 @@ internal object ReplyComposer {
     private val abilityTriggers = setOf(
         "can you", "could you", "will you", "would you", "are you able"
     )
+
+    /**
+     * The honest answer when there is no language model but there *is* retrieved context.
+     *
+     * Rather than pretending to summarise, it reads back the best-matched excerpt and names
+     * the file and page it came from. That is genuinely useful ("what does page 2 say?") and
+     * it can never hallucinate, because every word of it is the user's own text.
+     */
+    fun composeFromContext(ragUserPrompt: String): String {
+        val question = ragUserPrompt
+            .substringAfter(RagPromptComposer.QUESTION_HEADER, missingDelimiterValue = "")
+            .trim()
+            .ifBlank { "your documents" }
+        val excerpts = RagPromptComposer.extractExcerpts(ragUserPrompt)
+        if (excerpts.isEmpty()) return compose(question)
+
+        val best = excerpts.first()
+        val more = excerpts.size - 1
+        val builder = StringBuilder()
+        builder.append("From ").append(best.label).append(":\n")
+        builder.append(best.text.trim().take(MAX_QUOTED_CHARACTERS))
+        if (more > 0) {
+            builder.append("\n\n(")
+            builder.append(more).append(" more excerpt(s) matched in your indexed documents.)")
+        }
+        return builder.toString()
+    }
 
     fun compose(userText: String): String {
         val text = userText.trim()

@@ -51,12 +51,17 @@ class RuleBasedLocalTextGeneratorTest {
     @Test
     fun `delegates to the llama generator when a model is installed`() = runTest {
         whenever(modelStore.installedModelPath()).thenReturn("/data/local/lm/model.gguf")
-        whenever(llama.generateReply(any())).thenReturn("from the on-device model")
+        // The generator now routes everything through the *prompt* overload so the RAG
+        // context reaches the model in one shape; stubbing the String overload left this
+        // mock answering null. Stub the overload that is actually called.
+        whenever(llama.generateReply(any<RagPrompt>())).thenReturn("from the on-device model")
 
         val reply = generator.generateReply("what time is it?")
 
         assertEquals("from the on-device model", reply)
-        verify(llama).generateReply("what time is it?")
+        verify(llama).generateReply(
+            org.mockito.kotlin.argThat<RagPrompt> { userPrompt == "what time is it?" }
+        )
     }
 
     @Test
@@ -64,7 +69,7 @@ class RuleBasedLocalTextGeneratorTest {
         noModel()
         val reply = generator.generateReply("hello")
         assertEquals("Hello. I am ready when you are.", reply)
-        verify(llama, never()).generateReply(any())
+        verify(llama, never()).generateReply(any<String>())
     }
 
     @Test
@@ -117,7 +122,7 @@ class RuleBasedLocalTextGeneratorTest {
         // 'hi' is in the greeting set; that path is a greeting, not a guess. This test
         // specifically exercises the *length-floor* branch with a 4-character non-greeting.
         val nonGreeting = generator.generateReply("y33")
-        assertTrue(nonGreeting, nonGreeting.contains("need a longer sentence"))
+        assertTrue("was: $nonGreeting", nonGreeting.contains("need a longer sentence"))
     }
 
     @Test
@@ -127,15 +132,15 @@ class RuleBasedLocalTextGeneratorTest {
             val reply = generator.generateReply(blank)
             assertEquals("I didn't catch that. Please try again.", reply)
         }
-        verify(llama, never()).generateReply(any())
+        verify(llama, never()).generateReply(any<String>())
     }
 
     @Test
     fun `an unrecognised sentence echoes the input instead of fabricating an answer`() = runTest {
         noModel()
         val reply = generator.generateReply("Tell me about the lighthouse at Alexandria")
-        assertTrue(reply, reply.contains("Tell me about the lighthouse at Alexandria"))
-        assertTrue(reply, reply.contains("don't have a local reply model"))
+        assertTrue("was: $reply", reply.contains("Tell me about the lighthouse at Alexandria"))
+        assertTrue("was: $reply", reply.contains("don't have a local reply model"))
     }
 
     @Test

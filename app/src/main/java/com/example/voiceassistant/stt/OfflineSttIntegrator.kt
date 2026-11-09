@@ -34,6 +34,14 @@ class OfflineSttIntegrator(
     var lastInitializationError: String? = null
         private set
 
+    /**
+     * True while the frame collector is running.
+     *
+     * Exposed so a caller can assert the pairing invariant the hands-free loop depends on:
+     * the microphone is open **if and only if** something is consuming its frames.
+     */
+    val isTranscribingNow: Boolean get() = isTranscribing.get()
+
     fun loadModel(modelPath: String) {
         scope.launch { initializeModel(modelPath) }
     }

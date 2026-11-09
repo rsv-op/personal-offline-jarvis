@@ -128,6 +128,30 @@ android {
 
     testOptions {
         unitTests.isIncludeAndroidResources = true
+
+        // Print every test as it starts and finishes.
+        //
+        // The suite mixes plain JVM tests with Robolectric + Compose tests in one
+        // fork, so a single composition that never reaches idle blocks *every*
+        // later test with no output at all. With per-test logging the last line in
+        // the CI log names the offender instead of leaving a silent hour.
+        unitTests.all { test ->
+            test.testLogging {
+                events("started", "passed", "failed", "skipped")
+                exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+                showStandardStreams = false
+            }
+            // Robolectric + Compose needs a bigger heap than the 512 MB default;
+            // without it the GC thrashes and a slow suite can look like a hang.
+            test.maxHeapSize = "2g"
+            // `forkEvery = 1` was added while chasing the hang, and it backfired: a
+            // fresh JVM per test class means Robolectric re-extracts the android-all
+            // jar and re-runs its instrumentation for each of the six Robolectric
+            // classes, which on a 2-core CI runner costs more than the tests
+            // themselves and pushed the step past its timeout. One fork (the default)
+            // is fine now that no test can wedge the others — the suspend-mock bug
+            // that caused the hangs is gone, not merely hidden behind a timeout.
+        }
     }
 
     lint {
