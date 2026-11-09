@@ -166,11 +166,17 @@ jobs:
                  gradle --no-daemon --stacktrace :app:testDebugUnitTest \
                    --tests "com.example.voiceassistant.$pkg.*" \
                  >> /tmp/gradle-test-android.log 2>&1; then
-              echo "PASS $pkg"
+              echo "PASS $pkg" | tee -a /tmp/gradle-test-android.log
             else
-              echo "FAIL $pkg"
+              echo "FAIL $pkg" | tee -a /tmp/gradle-test-android.log
               failed=1
             fi
+            # Every invocation rewrites app/build/test-results, so the previous package's
+            # reports have to be moved out of the way or the annotations only ever describe
+            # the last package that ran.
+            mkdir -p "/tmp/test-results/$pkg"
+            cp -r app/build/test-results/testDebugUnitTest/*.xml \
+              "/tmp/test-results/$pkg/" 2>/dev/null || true
             # A killed Gradle leaves its worker JVM behind holding the test classes.
             pkill -f GradleWorkerMain || true
             pkill -f 'GradleDaemon' || true
@@ -245,14 +251,22 @@ jobs:
           # at all, and the last "started" line here is the test that wedged.
           android_log = pathlib.Path("/tmp/gradle-test-android.log")
           if android_log.is_file():
-              tail = android_log.read_text(errors="replace").splitlines()[-60:]
-              emit("Android test log tail", tail)
+              lines = android_log.read_text(errors="replace").splitlines()
+              # The per-package verdicts first: they say which package the rest belongs to.
+              emit("Android packages", [l for l in lines if re.match(r"^(PASS|FAIL) ", l)])
+              emit("Android test log tail", lines[-80:])
 
           # 2) Test failures, grouped by class.
-          results = pathlib.Path("app/build/test-results/testDebugUnitTest")
+          # Both the live directory and the per-package copies (the Android half is run
+          # one package at a time, and each run overwrites the live directory).
+          reports = []
+          for root in (pathlib.Path("app/build/test-results/testDebugUnitTest"),
+                       pathlib.Path("/tmp/test-results")):
+              if root.is_dir():
+                  reports.extend(sorted(root.rglob("*.xml")))
           by_class = {}
-          if results.is_dir():
-              for report in sorted(results.glob("*.xml")):
+          if reports:
+              for report in reports:
                   try:
                       tree = ET.parse(report)
                   except Exception:
