@@ -113,7 +113,18 @@ class WakeWordDetectorTest {
         val inside = gate.evaluate("what time is it", fromContinuousCapture = true, nowMs = now + 1_000)
         assertEquals(WakeSessionGate.Decision.Run("what time is it", wokeNow = false), inside)
 
-        // Once it lapses, the same sentence is ignored again.
+        // The window *slides*: an accepted command re-arms it from the moment it was heard,
+        // so a user who keeps talking never repeats the name. `fromContinuousCapture` was
+        // written as a positional fourth argument and silently landed in `confidence`, so
+        // this evaluated as a push-to-talk utterance (which never needs the wake word) and
+        // the lapse below could not happen.
+        now += 19_999
+        assertEquals(
+            WakeSessionGate.Decision.Run("what time is it", wokeNow = false),
+            gate.evaluate("what time is it", fromContinuousCapture = true, nowMs = now),
+        )
+
+        // Once it lapses — 20 s after the *last* thing heard — the same sentence is ignored.
         now += 20_001
         assertEquals(
             WakeSessionGate.Decision.Ignore,

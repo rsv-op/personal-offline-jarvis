@@ -150,15 +150,27 @@ object WakeWordDetector {
         .trim()
 
     /**
-     * True when [text] is a stop phrase *in full*.
+     * True when [text] is a stop phrase *in full*, or ends with a two-word one.
      *
-     * The match is anchored on purpose. An unanchored `startsWith` let the trailing half of
-     * the rule ("shaz") also match the *leading* half of an ordinary sentence, so a reply
-     * beginning with the name was classified as an interrupt and dropped: "Heretic, what is
-     * the battery level" became `ImmediateStop` before the name matcher ever ran.
+     * The anchoring is deliberate and has been wrong twice in opposite directions:
+     *
+     *  * an unanchored `startsWith` matched the *trailing* half of the rule against the
+     *    *leading* half of any sentence beginning with "shaz…", so a name-first command was
+     *    classified as an interrupt and dropped;
+     *  * anchoring the single-word keyword to `endsWith` then lost the interrupt itself —
+     *    "shaz what is the weather" is the user shouting to stop mid-sentence, and the stop
+     *    word is spoken first.
+     *
+     * The rule that satisfies both: the one-word absolute interrupt [STOP_KEYWORD] counts
+     * anywhere in the utterance (it is a barge-in, it must never depend on what the
+     * recogniser heard next to it), while the ambiguous multi-word phrases only count when
+     * they are the whole utterance or its tail ("be quiet", "and jarvis stop talking").
      */
     private fun isStopPhrase(text: String): Boolean =
-        STOP_PHRASES.any { phrase -> text == phrase || text.endsWith(" $phrase") }
+        text.split(' ').contains(STOP_KEYWORD) ||
+            STOP_PHRASES.any { phrase ->
+                phrase != STOP_KEYWORD && (text == phrase || text.endsWith(" $phrase"))
+            }
 
     /**
      * Matches "heretic", "hey heretic", "okay jarvis", "heretics", "hey, heretic!".
@@ -181,17 +193,28 @@ object WakeWordDetector {
         }
 
         if (!remaining.startsWith(name)) return null
-        val after = remaining.substring(name.length).trimStart()
-        if (after.isEmpty()) return ""
+        val after = remaining.substring(name.length)
 
-        // The recogniser sometimes emits the plural or the possessive ("heretics",
-        // "heretic's"). Those still count; any other continuation does not, so the word
-        // "heretical" in a sentence cannot open the microphone.
+        // The name must be a *word*, not a prefix of one: "heretical opinions" and
+        // "jarvisi" must not open the microphone. What may follow the name itself is a
+        // possessive/plural ("heretic's", "heretics"), then punctuation or a space, then
+        // the command.
+        //
+        // The previous rule returned `null` for every other continuation, which rejected
+        // every "name + command" utterance — the exact thing a hands-free assistant is for:
+        // "Here Heretic, what is the battery level" came back as Plain and was ignored.
         return when {
-            after.startsWith("'") || after.startsWith("\u2019") ->
-                after.drop(1).trimStart().removePrefix("s").trimStart()
-            after == "s" -> ""
-            after.startsWith("s ") -> after.removePrefix("s").trimStart()
+            after.startsWith("'") || after.startsWith("\u2019") -> {
+                val possessive = after.drop(1)
+                when {
+                    possessive.startsWith("s") -> possessive.drop(1).trimStart()
+                    else -> possessive.trimStart()
+                }
+            }
+            after.startsWith("s") && (after.length == 1 || !after[1].isLetter()) ->
+                after.drop(1).trimStart()
+            after.isEmpty() || !after[0].isLetter() || after[0].isWhitespace() ->
+                after.trimStart()
             else -> null
         }
     }
