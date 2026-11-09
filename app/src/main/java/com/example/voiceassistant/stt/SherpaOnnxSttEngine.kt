@@ -219,8 +219,13 @@ class SherpaOnnxSttEngine @Inject constructor(
 
     @Synchronized
     override fun getPartialText(): String {
-        val currentStream = stream ?: return ""
-        val currentRecognizer = recognizer ?: return ""
+        // Deliberately no null-returns here: a caller that asks for text with no
+        // model loaded has a bug, and a silent "" would hide it behind an empty
+        // transcript. The previous Vosk-era engine threw for the same reason, and
+        // `SherpaOnnxSttEngineTest` pins it: "a refused model leaves the engine
+        // uninitialized" expects a loud failure, not a blank string.
+        val currentStream = requireStream()
+        val currentRecognizer = requireRecognizer()
         return runCatching { currentRecognizer.getResult(currentStream).text.orEmpty().trim() }
             .getOrDefault("")
     }

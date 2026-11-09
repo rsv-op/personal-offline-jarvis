@@ -129,6 +129,12 @@ object TextExtractors {
             val dictionary = pdf.substring(dictStart, streamIndex)
             cursor = endIndex + "endstream".length
 
+            // A `/ToUnicode` CMap is a text stream full of `(...)` strings, but none of
+            // them is page content — they are the *mapping* from glyph codes to Unicode.
+            // Treating one as a page both invents text and hides a genuinely empty page,
+            // so it is skipped like a font or an xref stream.
+            if (isUnicodeCMap(dictionary) || UNICODE_CMAP_HEADER.containsMatchIn(dictionary)) continue
+
             // A /Length that matches the remaining bytes means a photograph, a font or an
             // xref stream, not page content: skip those without inflating them.
             val declaredLength = Regex("/Length\\s+(\\d{1,9})").find(dictionary)
@@ -145,14 +151,35 @@ object TextExtractors {
             if (text.isNotBlank()) pages += text
         }
 
-        if (pages.isEmpty()) {
-            val swept = sweepPrintable(bytes)
-            return if (swept.length >= MIN_PDF_TEXT_RUN) swept else ""
-        }
-        return pages.joinToString("\u000C")
+        if (pages.isNotEmpty()) return pages.joinToString("\u000C")
+
+        // No stream produced text. Sweeping the raw bytes is the last resort for a PDF
+        // whose content is stored uncompressed and unlabelled — but it also happily
+        // returns `endstream`, `obj` and binary noise, which is worse than nothing: the
+        // index would quote garbage back at the user. So the sweep runs only when the file
+        // does not look like a PDF at all; a real PDF with no text layer is a scanned
+        // document and correctly yields "".
+        if (looksLikePdf(pdf)) return ""
+        val swept = sweepPrintable(bytes)
+        return if (swept.length >= MIN_PDF_TEXT_RUN) swept else ""
     }
 
     private val DCT_FILTER = Regex("""/Filter\s*(?:\[\s*)?/(DCTDecode|JPXDecode|CCITTFaxDecode|JBIG2Decode)""")
+
+    /**
+     * The header every `/ToUnicode` CMap stream starts with.
+     *
+     * The dictionary `/Name` is only a convention — producers routinely inline the CMap
+     * and name the object something else — so the header text is the reliable signal.
+     */
+    private val UNICODE_CMAP_HEADER = Regex("/CIDInit|beginbfchar|beginbfrange")
+
+    private fun isUnicodeCMap(dictionary: String): Boolean =
+        dictionary.contains("/ToUnicode") || dictionary.contains("/CMapName")
+
+    /** True when [pdf] is a PDF with at least one `obj … endobj` body. */
+    private fun looksLikePdf(pdf: String): Boolean =
+        pdf.startsWith("%PDF") || pdf.contains(" endobj") || pdf.contains("%%EOF")
     private val MAX_PDF_STREAM_BYTES = 16 * 1024 * 1024
 
     /** Inflates one stream body when it is Flate-compressed; returns it unchanged otherwise. */
@@ -207,6 +234,9 @@ object TextExtractors {
             if (nextBt < 0) break
             sawTextBox = true
             val nextEt = findKeyword(text, "ET", nextBt + 2)
+            // An unbalanced `BT` (a truncated stream, or an empty page whose `BT` sits at
+            // the very end) still marks where the text object starts; keep reading to the
+            // end of the stream instead of dropping the page.
             val end = if (nextEt < 0) text.size else nextEt
             appendShowingStrings(text, nextBt + 2, end, charMap, out)
             index = end + 2

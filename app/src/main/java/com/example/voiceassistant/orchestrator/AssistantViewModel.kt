@@ -1092,7 +1092,11 @@ class AssistantViewModel @Inject constructor(
         ) {
             return null
         }
-        val query = RagQuery.parse(question)
+        // Resolve the query against the paths that are actually indexed, so "the
+        // deployment document" is only treated as a file filter when a file by that
+        // name exists. Without this the filter could match nothing and silently fall
+        // back to the whole index, which reads to the user as "it ignored my file".
+        val query = RagQuery.parse(question, ragIngestor.indexSummary().sources.map { it.sourcePath })
         if (query.isEmpty || RagQuery.looksLikeDeviceCommand(query.question)) return null
         val configured = _ragTargetFilter.value
         val effective = if (configured.isNotBlank() && query.fileFilter == null) {

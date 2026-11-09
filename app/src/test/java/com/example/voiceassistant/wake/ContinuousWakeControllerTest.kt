@@ -17,8 +17,6 @@ import org.junit.Assert.assertTrue
 import org.junit.After
 import org.junit.Test
 import org.mockito.kotlin.any
-import org.mockito.kotlin.doNothing
-import org.mockito.kotlin.doThrow
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.never
 import org.mockito.kotlin.verify
@@ -129,16 +127,14 @@ class ContinuousWakeControllerTest {
      */
     private fun fakeCapture(startError: Throwable? = null): AudioCaptureSource {
         val capture = mock<AudioCaptureSource>()
-        runBlocking {
-            if (startError == null) {
-                doNothing().whenever(capture).start()
-            } else {
-                // The failing-start case: `start()` throws instead of returning, which is
-                // how the controller sees "microphone busy".
-                doThrow(startError).whenever(capture).start()
-            }
-            doNothing().whenever(capture).stop()
+        if (startError == null) {
+            stubSuspendingVoid { capture.start() }
+        } else {
+            // The failing-start case: `start()` throws instead of returning, which is how
+            // the controller sees "microphone busy".
+            stubSuspendingThrow(startError) { capture.start() }
         }
+        stubSuspendingVoid { capture.stop() }
         return capture
     }
 
@@ -157,6 +153,24 @@ class ContinuousWakeControllerTest {
         // in the app, so the fake engine has to be initialized first.
         kotlinx.coroutines.runBlocking { integrator.initializeModel("/fake/model") }
         return integrator
+    }
+
+    /**
+     * Stubs a **suspend** `Unit` function so the call returns immediately.
+     *
+     * `doNothing()` cannot be used here: Mockito sees a suspend function as a real method
+     * with a `Continuation` parameter and a non-void (`Any?`) return type, so it rejects
+     * it with "Only void methods can doNothing()!". `whenever(x.foo())` inside an
+     * `runBlocking` block is the supported spelling — the call runs, the returned
+     * continuation is recorded as the stub, and a later call resumes it straight away.
+     */
+    private fun stubSuspendingVoid(call: suspend () -> Unit) {
+        runBlocking { whenever(call()).thenReturn(Unit) }
+    }
+
+    /** Same, for the call that must fail. */
+    private fun stubSuspendingThrow(error: Throwable, call: suspend () -> Unit) {
+        runBlocking { whenever(call()).thenThrow(error) }
     }
 
     @Test

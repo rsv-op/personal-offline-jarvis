@@ -83,7 +83,19 @@ data class RagQuery(
             RegexOption.IGNORE_CASE,
         )
 
-        fun parse(raw: String): RagQuery {
+        fun parse(raw: String): RagQuery = parse(raw, knownSources = emptyList())
+
+        /**
+         * Parses [raw], using [knownSources] to decide whether a spoken phrase like
+         * "the deployment document" is naming a file that is actually indexed.
+         *
+         * The hint regex cannot tell "the deployment document" (a topic) from "the
+         * roadmap document" (a file called `roadmap.md`), so the index resolves the
+         * ambiguity: a hint that matches no indexed source stays a search term, while one
+         * that does becomes a hard filter. Passing no sources keeps the old, purely
+         * syntactic behaviour — which is what the unit tests exercise.
+         */
+        fun parse(raw: String, knownSources: List<String>): RagQuery {
             val trimmed = raw.trim()
             if (trimmed.isEmpty()) return RagQuery("", null, null, raw)
             val question = TRAILING_INSTRUCTION.replace(trimmed, "").trim()
@@ -95,6 +107,11 @@ data class RagQuery(
                 ?.trim()
                 ?.takeIf { it.length >= 3 }
 
+            // "in the deployment document" only names a file if a *document* actually has
+            // that word in its name; otherwise "deployment" is a topic, and treating it as
+            // a file filter would restrict retrieval to a corpus entry that does not exist
+            // and then silently fall back to the whole index. The exact-match fallback is
+            // only applied when the caller supplies the known source paths.
             val hintedFile = FILE_HINT_REGEX.find(question)
                 ?.groupValues?.getOrNull(1)
                 ?.trim()
@@ -104,9 +121,15 @@ data class RagQuery(
                 question.lowercase().contains(spoken)
             }?.second
 
+            val resolvedHint = hintedFile?.takeIf { hint ->
+                knownSources.isEmpty() || knownSources.any { source ->
+                    source.lowercase().contains(leafNameOf(hint))
+                }
+            }
+
             return RagQuery(
                 question = question,
-                fileFilter = explicitFile ?: hintedFile ?: namedDocument,
+                fileFilter = explicitFile ?: resolvedHint ?: namedDocument,
                 pageNumber = page,
                 rawQuery = raw,
             )
@@ -117,6 +140,10 @@ data class RagQuery(
          * about the user's documents. Such a request must never drag document excerpts into
          * a confirmation prompt.
          */
+        /** The last path component, lower-cased, without an extension. */
+        private fun leafNameOf(value: String): String =
+            value.lowercase().substringAfterLast('/').substringBeforeLast('.')
+
         fun looksLikeDeviceCommand(raw: String): Boolean =
             NON_RETRIEVAL.containsMatchIn(LEADING_REFERENCE.replace(raw.trim(), ""))
     }
