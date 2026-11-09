@@ -215,7 +215,15 @@ class ContinuousWakeControllerTest {
         controller.onFinalTranscript("hey heretic, what is on my calendar")
 
         assertEquals(listOf("what is on my calendar" to true), callbacks.commands)
-        assertEquals(1, callbacks.wakes.size)
+        // No separate acknowledgement: [ContinuousWakeController.Callbacks.onWakeAcknowledged]
+        // makes the assistant say "Yes?" and wait, and saying that *while* running the
+        // command that came with the name would be it talking over itself. The wake is
+        // still counted, which is what the chip shows.
+        assertTrue(
+            "a wake-with-command must not also ask \"Yes?\"",
+            callbacks.wakes.isEmpty(),
+        )
+        assertEquals(1, controller.wakeCount.value)
     }
 
     @Test
