@@ -121,6 +121,9 @@ jobs:
 
       - name: Run the plain unit tests
         id: gradle_test
+        # Both halves run even when the other fails, so one CI round reports every
+        # broken test instead of one half at a time.
+        if: success() || failure()
         # The suite is split in two so a wedged Compose composition cannot hide the
         # plain JVM tests (and vice versa). Both halves are cheap on their own; the
         # per-test `--tests` selection below is what keeps the log readable.
@@ -145,6 +148,7 @@ jobs:
 
       - name: Run the Android-dependent unit tests
         id: gradle_test_android
+        if: success() || failure()
         # Robolectric + Compose: the half that used to spin forever. It runs as its own
         # step so its log and its timeout are separate from the JVM-only tests.
         timeout-minutes: 20

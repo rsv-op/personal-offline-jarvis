@@ -51,12 +51,17 @@ class RuleBasedLocalTextGeneratorTest {
     @Test
     fun `delegates to the llama generator when a model is installed`() = runTest {
         whenever(modelStore.installedModelPath()).thenReturn("/data/local/lm/model.gguf")
-        whenever(llama.generateReply(any<String>())).thenReturn("from the on-device model")
+        // The generator now routes everything through the *prompt* overload so the RAG
+        // context reaches the model in one shape; stubbing the String overload left this
+        // mock answering null. Stub the overload that is actually called.
+        whenever(llama.generateReply(any<RagPrompt>())).thenReturn("from the on-device model")
 
         val reply = generator.generateReply("what time is it?")
 
         assertEquals("from the on-device model", reply)
-        verify(llama).generateReply("what time is it?")
+        verify(llama).generateReply(
+            org.mockito.kotlin.argThat<RagPrompt> { userPrompt == "what time is it?" }
+        )
     }
 
     @Test

@@ -31,9 +31,15 @@ class DecisionLogTest {
 
     @Before
     fun setUp() {
-        directory = temporaryFolder.newFolder("decisions")
+        val folder = temporaryFolder.newFolder("decisions").also { directory = it }
         log = DecisionLog().apply {
-            this.directory = directory
+            // NOT `this.directory = directory`: inside `apply` the receiver is the new
+            // DecisionLog, so `directory` on both sides of that assignment resolves to the
+            // log's own (still null) property and the statement is a silent no-op. The log
+            // then stays detached — which is why `verifyChain()` answered "the decision log
+            // is not attached" and the tamper tests had a null body to edit. Bind the
+            // folder through the real entry point instead, and only after it exists.
+            attach(folder)
             ioDispatcher = UnconfinedTestDispatcher()
         }
     }
@@ -196,9 +202,13 @@ class DecisionLogTest {
     @Test
     fun `an unwritable log fails closed`() = runTest {
         val blocked = File(temporaryFolder.root, "blocked-parent").apply { createNewFile() }
+        val warnings = mutableListOf<String>()
         val closed = DecisionLog().apply {
-            directory = File(blocked, "cannot-create")
+            attach(File(blocked, "cannot-create"))
             ioDispatcher = UnconfinedTestDispatcher()
+            // `android.util.Log.w` throws "not mocked" in a plain JVM test, and a
+            // fail-closed path that dies on its own warning is worse than useless.
+            warn = { warnings += it }
         }
         closed.grant(
             Capability.FILE_READ,
@@ -211,5 +221,9 @@ class DecisionLogTest {
             "The log is unwritable, and an unauditable read is exactly what this gate exists to prevent.",
         )
         assertFalse(allowed)
+        assertTrue(
+            "the refused write must be reported, was: $warnings",
+            warnings.any { it.contains("could not be written") },
+        )
     }
 }

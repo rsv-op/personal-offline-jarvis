@@ -213,6 +213,12 @@ class DecisionLog @Inject constructor() {
 
     internal var clock: () -> Long = System::currentTimeMillis
 
+    /**
+     * Where a durability warning goes. Lateinit-free on purpose: the default is a plain
+     * lambda, and tests replace it because `android.util.Log` throws in a plain JVM test.
+     */
+    internal var warn: (String) -> Unit = { message -> Log.w(TAG, message) }
+
     private val mutex = Mutex()
 
     private val granted = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
@@ -364,7 +370,11 @@ class DecisionLog @Inject constructor() {
                         file.appendText(record.toJson() + "\n")
                         true
                     }.getOrElse { error ->
-                        Log.w(TAG, "Decision log could not be written: ${error.message}")
+                        // `android.util.Log` is not mocked in plain JVM unit tests, and it
+                        // THROWS when it is. A fail-closed path must not itself fail, so the
+                        // warning is routed through a hook a test can capture: the default
+                        // writes to Log, and `DecisionLogTest` swaps in a recording lambda.
+                        warn("Decision log could not be written: ${error.message}")
                         false
                     }
                 }
