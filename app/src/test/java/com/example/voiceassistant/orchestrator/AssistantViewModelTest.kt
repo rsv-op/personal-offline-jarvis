@@ -56,6 +56,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import org.mockito.kotlin.any
+import org.mockito.kotlin.doNothing
 import org.mockito.kotlin.doReturn
 import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
@@ -133,6 +134,14 @@ class AssistantViewModelTest {
         frames = MutableSharedFlow(extraBufferCapacity = 4)
         doReturn(frames).whenever(mockAudioCaptureSource).frames
         doReturn(MutableSharedFlow<Throwable>()).whenever(mockAudioCaptureSource).errors
+        // start()/stop() are suspend functions. Mockito's default answer returns null for a
+        // suspend call instead of an already-completed continuation, so a coroutine that
+        // calls them never resumes and the whole test JVM stalls with no output. Stub them
+        // once here so every test in this class that opens the microphone terminates.
+        runBlocking {
+            doNothing().whenever(mockAudioCaptureSource).start()
+            doNothing().whenever(mockAudioCaptureSource).stop()
+        }
         doReturn(MutableSharedFlow<TtsEvent>()).whenever(mockTtsController).events
         doReturn("/model").whenever(mockModelStore).installedModelPath()
         doReturn(40.0).whenever(mockModelStore).installedModelSizeMb()

@@ -8,14 +8,17 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.After
 import org.junit.Test
 import org.mockito.kotlin.any
 import org.mockito.kotlin.doNothing
+import org.mockito.kotlin.doThrow
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.never
 import org.mockito.kotlin.verify
@@ -82,17 +85,62 @@ class ContinuousWakeControllerTest {
      */
     private fun controller(
         scope: TestScope,
-        capture: AudioCaptureSource = mock(),
+        capture: AudioCaptureSource = fakeCapture(),
         gate: WakeSessionGate = WakeSessionGate(),
         clock: () -> Long = { 0L },
         integrator: OfflineSttIntegrator = realIntegrator(scope),
-    ): ContinuousWakeController = ContinuousWakeController(
-        capture = capture,
-        integrator = integrator,
-        gate = gate,
-        scope = scope,
-        clock = clock,
-    )
+    ): ContinuousWakeController {
+        val built = ContinuousWakeController(
+            capture = capture,
+            integrator = integrator,
+            gate = gate,
+            scope = scope,
+            clock = clock,
+        )
+        started.add(built)
+        return built
+    }
+
+    /**
+     * Controllers created by this test, so [tearDown] can close their microphone sessions.
+     *
+     * A controller that is still `listening` holds a collector on the capture flow, which
+     * is exactly the kind of leaked coroutine `runTest` waits on: without this teardown a
+     * test that never calls `stop()` would leave the scope with live children and the test
+     * would block until the 60 s default timeout — or, under a real clock, appear to hang.
+     */
+    private val started = mutableListOf<ContinuousWakeController>()
+
+    @After
+    fun tearDown() {
+        runBlocking {
+            started.forEach { controller -> runCatching { controller.stop() } }
+        }
+        started.clear()
+    }
+
+    /**
+     * A fake capture source with working `start()`/`stop()`.
+     *
+     * These two are **suspend** functions. A bare `mock()` answers a suspend call with
+     * `null` instead of an already-completed `Continuation`, so the coroutine that called
+     * `capture.start()` suspends forever and the test JVM hangs with no output. Stubbing
+     * them here — once, for every test in this class — is why the suite terminates.
+     */
+    private fun fakeCapture(startError: Throwable? = null): AudioCaptureSource {
+        val capture = mock<AudioCaptureSource>()
+        runBlocking {
+            if (startError == null) {
+                doNothing().whenever(capture).start()
+            } else {
+                // The failing-start case: `start()` throws instead of returning, which is
+                // how the controller sees "microphone busy".
+                doThrow(startError).whenever(capture).start()
+            }
+            doNothing().whenever(capture).stop()
+        }
+        return capture
+    }
 
     private fun realIntegrator(scope: TestScope): OfflineSttIntegrator {
         val engine = mock<SttEngine>()
@@ -113,13 +161,12 @@ class ContinuousWakeControllerTest {
 
     @Test
     fun `start opens the microphone and the recogniser together`() = runTest {
-        val capture = mock<AudioCaptureSource>()
+        val capture = fakeCapture()
         val integrator = realIntegrator(this)
         val controller = controller(this, capture = capture, integrator = integrator)
 
-        val started = controller.start(RecordingCallbacks())
+        assertTrue(controller.start(RecordingCallbacks()))
 
-        assertTrue(started)
         assertTrue(controller.isListening)
         verify(capture).start()
         assertTrue("the recogniser must run whenever the mic is open", integrator.isTranscribingNow)
@@ -128,14 +175,11 @@ class ContinuousWakeControllerTest {
 
     @Test
     fun `start reports a problem and stays off when the microphone fails`() = runTest {
-        val capture = mock<AudioCaptureSource>()
-        whenever(capture.start()).thenThrow(IllegalStateException("microphone busy"))
+        val capture = fakeCapture(startError = IllegalStateException("microphone busy"))
         val controller = controller(this, capture = capture)
         val callbacks = RecordingCallbacks()
 
-        val started = controller.start(callbacks)
-
-        assertFalse(started)
+        assertFalse(controller.start(callbacks))
         assertFalse(controller.isListening)
         assertEquals(WakeState.OFF, controller.state.value)
         assertEquals(listOf("microphone busy"), callbacks.problems)
@@ -256,7 +300,7 @@ class ContinuousWakeControllerTest {
 
     @Test
     fun `stop closes the microphone and the window`() = runTest {
-        val capture = mock<AudioCaptureSource>()
+        val capture = fakeCapture()
         val integrator = realIntegrator(this)
         val controller = controller(this, capture = capture, integrator = integrator)
         controller.start(RecordingCallbacks())
