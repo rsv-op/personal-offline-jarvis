@@ -418,7 +418,9 @@ object TextExtractors {
     private fun pdfStringDecoder(pdf: String): Map<Int, String> {
         val map = HashMap<Int, String>(512)
         val cmapBlocks = Regex("""beginbfchar([\\s\\S]*?)endbfchar""").findAll(pdf)
-        val pair = Regex("""<([0-9A-Fa-f]{2,4})>\\s*<([0-9A-Fa-f]{2,8})>""")
+        // The source code is 2-4 hex digits (1-2 bytes in a CID font); the destination
+        // may be a multi-character Unicode string, so it is the wider group.
+        val pair = Regex("""<([0-9A-Fa-f]{2,4})>\\s*<([0-9A-Fa-f]{2,10})>""")
         for (block in cmapBlocks) {
             for (match in pair.findAll(block.groupValues[1])) {
                 val code = match.groupValues[1].toIntOrNull(16) ?: continue

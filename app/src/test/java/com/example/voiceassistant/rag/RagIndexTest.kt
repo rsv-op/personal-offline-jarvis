@@ -58,12 +58,17 @@ class RagIndexTest {
 
     @Test
     fun `naming a file boosts it even when the body never repeats the name`() {
-        val query = RagQuery.parse("what does the deployment document say")
-        val hits = corpus.search(query)
+        // The hint is resolved against the index, exactly as AssistantViewModel does it:
+        // "the deployment document" names a file only because `deployment.md` is indexed.
+        // Without the source list there is no way to tell that phrase from a topic, and
+        // treating it as a filter would silently restrict retrieval to nothing.
+        val sources = corpus.summary().sources.map { it.sourcePath }
+        val query = RagQuery.parse("what does the deployment document say", sources)
+        assertEquals("deployment", query.fileFilter)
 
+        val hits = corpus.search(query)
         assertTrue(hits.isNotEmpty())
         assertEquals("deployment.md", hits.first().chunk.sourcePath)
-        assertEquals("deployment", query.fileFilter)
     }
 
     @Test
@@ -101,6 +106,7 @@ class RagIndexTest {
         // An emptied re-import must remove the old excerpts, not leave stale ones.
         index.put("a.txt", emptyList())
         assertEquals(0, index.size)
+        assertTrue("an emptied source must disappear from the summary", index.summary().isEmpty)
     }
 
     @Test
@@ -142,9 +148,16 @@ class RagIndexTest {
         val context = corpus.buildContext(query)
 
         assertFalse(context.isEmpty)
-        assertTrue(context.text.startsWith("[notes.md p.1]:"))
+        assertTrue(
+            "the first excerpt must come from the notes: ${context.text}",
+            context.text.startsWith("[notes.md p.1]:"),
+        )
         assertTrue(context.totalCharacters <= RagIndex.DEFAULT_MAX_CONTEXT_CHARS)
-        assertTrue(context.sourceLabels.all { it.contains("page") || it.contains(".md") })
+        // The label is "path p.N" (p. with a dot), not the word "page".
+        assertTrue(
+            "every label must name its file and page: ${context.sourceLabels}",
+            context.sourceLabels.all { it.contains(".md p.") },
+        )
 
         val prompt = RagPromptComposer.compose(context, "how long is the battery budget")
         assertTrue(prompt.usedContext)
@@ -153,10 +166,17 @@ class RagIndexTest {
         assertTrue(prompt.systemInstruction.contains("cite the label"))
 
         // The excerpts come back out of the prompt unchanged (the fallback quotes them).
+        // The question here is deliberately different from the retrieval query: the query
+        // names a page, the question asks about the budget, and the composer keeps the two
+        // apart. `filter()` falls back to the whole index when a page filter matches
+        // nothing, so excerpt 1 is the notes page that was ranked first either way.
         val excerpts = RagPromptComposer.extractExcerpts(prompt.userPrompt)
         assertEquals(context.chunks.size, excerpts.size)
         assertEquals(context.chunks.first().label, excerpts.first().label)
-        assertTrue(excerpts.first().text.startsWith("Battery budget"))
+        assertTrue(
+            "the quoted excerpt must be the battery paragraph: ${excerpts.first().text}",
+            excerpts.first().text.startsWith("Battery budget"),
+        )
     }
 
     @Test

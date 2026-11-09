@@ -132,12 +132,18 @@ object RagChunker {
             parts.forEachIndexed { index, part ->
                 val trimmed = part.trim()
                 if (trimmed.isEmpty()) return@forEachIndexed
+                val effectivePage = if (documentPages.size == 1 && parts.size > 1) {
+                    pageNumber + index
+                } else {
+                    pageNumber
+                }
+                val effectivePart = if (documentPages.size == 1 && parts.size > 1) 1 else index + 1
                 chunks += RagChunk(
                     sourcePath = path,
-                    pageNumber = pageNumber,
-                    partIndex = index + 1,
+                    pageNumber = effectivePage,
+                    partIndex = effectivePart,
                     content = trimmed,
-                    tokens = tokenize("$path page $pageNumber $trimmed"),
+                    tokens = tokenize("$path page $effectivePage $trimmed"),
                 )
             }
         }

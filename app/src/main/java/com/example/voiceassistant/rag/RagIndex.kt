@@ -34,7 +34,14 @@ class RagIndex(maxChunks: Int = DEFAULT_MAX_CHUNKS) {
     private val liveChunkCount = AtomicInteger(0)
 
     /** Total excerpts the index will hold. */
-    val capacity: Int = maxChunks.coerceAtLeast(16)
+    /**
+     * The hard ceiling on stored excerpts.
+     *
+     * The floor is 1, not 16: a caller asking for a three-chunk index (a test, or a device
+     * with almost no memory) must get three. A silent floor *above* the request is a bound
+     * that does not bind, which is worse than no bound at all because it looks like one.
+     */
+    val capacity: Int = maxChunks.coerceAtLeast(1)
 
     val size: Int get() = liveChunkCount.get()
 
