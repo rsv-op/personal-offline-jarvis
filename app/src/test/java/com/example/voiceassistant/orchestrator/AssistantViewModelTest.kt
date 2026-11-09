@@ -25,7 +25,7 @@ import com.example.voiceassistant.generation.llama.LlamaModelStore
 import com.example.voiceassistant.nlp.AppIntent
 import com.example.voiceassistant.nlp.NlpProcessor
 import com.example.voiceassistant.statemachine.AssistantUiState
-import com.example.voiceassistant.stt.AudioCaptureSource
+import com.example.voiceassistant.stt.FakeAudioCaptureSource
 import com.example.voiceassistant.stt.SherpaOnnxModelStore
 import com.example.voiceassistant.stt.SttEngine
 import com.example.voiceassistant.vault.JarvisMemory
@@ -54,6 +54,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 import org.junit.rules.TemporaryFolder
 import org.mockito.kotlin.any
 import org.mockito.kotlin.doReturn
@@ -69,6 +72,11 @@ import java.io.File
  * spoken yes/no loop — all without a microphone or a real sherpa-onnx model.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
+// The fake microphone extends the real `AudioCaptureSource`, whose constructor takes a
+// `Context`, so this class now runs under Robolectric. It touches no audio hardware and
+// the view model is driven by `Dispatchers.setMain` below, so behaviour is unchanged.
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [33])
 class AssistantViewModelTest {
 
     @get:Rule
@@ -80,7 +88,12 @@ class AssistantViewModelTest {
     private lateinit var mockAlarmExecutor: AlarmExecutor
     private lateinit var mockTimerExecutor: TimerExecutor
     private lateinit var mockStatusExecutor: StatusExecutor
-    private lateinit var mockAudioCaptureSource: AudioCaptureSource
+    /**
+     * A real fake, not a mock: `AudioCaptureSource.start()`/`stop()` are suspend functions,
+     * and a mocked suspend function never resumes its caller — the test JVM would hang
+     * rather than fail. See `FakeAudioCaptureSource`.
+     */
+    private lateinit var mockAudioCaptureSource: FakeAudioCaptureSource
     private lateinit var mockSttEngine: SttEngine
     private lateinit var mockModelStore: SherpaOnnxModelStore
     private lateinit var mockLocalTextGenerator: LocalTextGenerator
@@ -116,7 +129,7 @@ class AssistantViewModelTest {
         mockAlarmExecutor = mock()
         mockTimerExecutor = mock()
         mockStatusExecutor = mock()
-        mockAudioCaptureSource = mock()
+        mockAudioCaptureSource = FakeAudioCaptureSource()
         mockSttEngine = mock()
         mockModelStore = mock()
         mockLocalTextGenerator = mock()
@@ -131,19 +144,8 @@ class AssistantViewModelTest {
         ragIngestor = RagIngestor(mockContext, RagIndex())
 
         frames = MutableSharedFlow(extraBufferCapacity = 4)
-        doReturn(frames).whenever(mockAudioCaptureSource).frames
-        doReturn(MutableSharedFlow<Throwable>()).whenever(mockAudioCaptureSource).errors
-        // start()/stop() are suspend functions. Mockito's default answer returns null for
-        // a suspend call instead of an already-completed continuation, so a coroutine that
-        // calls them never resumes and the whole test JVM stalls with no output. Stub them
-        // once here so every test in this class that opens the microphone terminates.
-        // `doNothing()` is not an option: Mockito treats a suspend function as a non-void
-        // method (it takes a Continuation and returns Any?), so `whenever(...)` inside
-        // runBlocking is the supported spelling.
-        runBlocking {
-            whenever(mockAudioCaptureSource.start()).thenReturn(Unit)
-            whenever(mockAudioCaptureSource.stop()).thenReturn(Unit)
-        }
+        mockAudioCaptureSource.framesOverride = frames
+        mockAudioCaptureSource.errorsOverride = MutableSharedFlow()
         doReturn(MutableSharedFlow<TtsEvent>()).whenever(mockTtsController).events
         doReturn("/model").whenever(mockModelStore).installedModelPath()
         doReturn(40.0).whenever(mockModelStore).installedModelSizeMb()

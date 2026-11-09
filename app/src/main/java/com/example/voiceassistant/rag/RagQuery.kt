@@ -122,8 +122,19 @@ data class RagQuery(
             }?.second
 
             val resolvedHint = hintedFile?.takeIf { hint ->
-                knownSources.isEmpty() || knownSources.any { source ->
-                    source.lowercase().contains(leafNameOf(hint))
+                if (knownSources.isEmpty()) {
+                    true
+                } else {
+                    val leaf = leafNameOf(hint)
+                    // Match a whole path component, not a substring: "art" must not be
+                    // considered a name for "cart.md". Extension-less hints match any
+                    // extension, which is how "roadmap document" finds "roadmap.md".
+                    knownSources.any { source ->
+                        source.lowercase()
+                            .substringAfterLast('/')
+                            .substringBeforeLast('.')
+                            .let { it == leaf || it.contains(leaf) }
+                    }
                 }
             }
 

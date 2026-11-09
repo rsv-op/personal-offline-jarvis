@@ -119,21 +119,46 @@ jobs:
             :app:compileDebugKotlin \
             :app:compileDebugUnitTestKotlin 2>&1 | tee /tmp/gradle-compile.log
 
-      - name: Run the unit tests
+      - name: Run the plain unit tests
         id: gradle_test
-        # The test JVM is the step that can spin forever: Robolectric + Compose
-        # tests share a fork with the plain JVM tests, and a single never-idle
-        # composition blocks the whole suite. 25 minutes is ~6x the observed
-        # duration of a healthy run, so a timeout here means "a test hangs",
-        # not "the runner is slow".
-        timeout-minutes: 25
+        # The suite is split in two so a wedged Compose composition cannot hide the
+        # plain JVM tests (and vice versa). Both halves are cheap on their own; the
+        # per-test `--tests` selection below is what keeps the log readable.
+        timeout-minutes: 15
         env:
           JARVIS_VERSION_CODE: ${{ github.run_number }}
         run: |
           set -o pipefail
-          timeout --signal=QUIT --kill-after=60s 1200 \
+          timeout --signal=QUIT --kill-after=60s 600 \
             gradle --no-daemon --stacktrace :app:testDebugUnitTest \
+              --tests 'com.example.voiceassistant.aimatrix.*' \
+              --tests 'com.example.voiceassistant.chat.*' \
+              --tests 'com.example.voiceassistant.core.*' \
+              --tests 'com.example.voiceassistant.generation.*' \
+              --tests 'com.example.voiceassistant.memory.*' \
+              --tests 'com.example.voiceassistant.nlp.*' \
+              --tests 'com.example.voiceassistant.statemachine.*' \
+              --tests 'com.example.voiceassistant.stt.*' \
+              --tests 'com.example.voiceassistant.telematics.*' \
+              --tests 'com.example.voiceassistant.vault.*' \
             2>&1 | tee /tmp/gradle-test.log
+
+      - name: Run the Android-dependent unit tests
+        id: gradle_test_android
+        # Robolectric + Compose: the half that used to spin forever. It runs as its own
+        # step so its log and its timeout are separate from the JVM-only tests.
+        timeout-minutes: 20
+        env:
+          JARVIS_VERSION_CODE: ${{ github.run_number }}
+        run: |
+          set -o pipefail
+          timeout --signal=QUIT --kill-after=60s 900 \
+            gradle --no-daemon --stacktrace :app:testDebugUnitTest \
+              --tests 'com.example.voiceassistant.orchestrator.*' \
+              --tests 'com.example.voiceassistant.rag.*' \
+              --tests 'com.example.voiceassistant.ui.*' \
+              --tests 'com.example.voiceassistant.wake.*' \
+            2>&1 | tee /tmp/gradle-test-android.log
 
       - name: Assemble the debug APK
         id: gradle_assemble
@@ -150,7 +175,7 @@ jobs:
         run: |
           # The annotation reporter reads one file; keep its input shape stable.
           : > /tmp/gradle.log
-          for f in /tmp/gradle-compile.log /tmp/gradle-test.log /tmp/gradle-assemble.log; do
+          for f in /tmp/gradle-compile.log /tmp/gradle-test.log /tmp/gradle-test-android.log /tmp/gradle-assemble.log; do
             [ -f "$f" ] && cat "$f" >> /tmp/gradle.log
           done
           wc -l /tmp/gradle.log || true
@@ -158,10 +183,12 @@ jobs:
       - name: Dump the test thread stacks when the tests time out
         # `timeout --signal=QUIT` makes the Gradle daemon-less JVM print a full
         # thread dump, which is the only way to see *which* test is stuck.
-        if: failure() && steps.gradle_test.outcome == 'failure'
+        if: failure() && (steps.gradle_test.outcome == 'failure' || steps.gradle_test_android.outcome == 'failure')
         run: |
-          echo '=== last 200 lines of the test log ==='
-          tail -n 200 /tmp/gradle-test.log || true
+          echo '=== last 100 lines of the plain test log ==='
+          tail -n 100 /tmp/gradle-test.log || true
+          echo '=== last 200 lines of the Android test log ==='
+          tail -n 200 /tmp/gradle-test-android.log || true
           echo '=== test result XML files (names only) ==='
           find app/build/test-results -name '*.xml' 2>/dev/null | sort || true
 

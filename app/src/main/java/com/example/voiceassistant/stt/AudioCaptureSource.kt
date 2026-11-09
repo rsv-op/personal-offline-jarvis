@@ -28,13 +28,29 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
 
-/** Captures 16 kHz mono PCM audio and streams short frames to the offline recognizer. */
-class AudioCaptureSource @Inject constructor(
+/**
+ * Captures 16 kHz mono PCM audio and streams short frames to the offline recognizer.
+ *
+ * `open` rather than `final`, and the two lifecycle functions are `open` with it, so a test
+ * can supply a real fake instead of a Mockito mock. That is not a style preference: both
+ * are **suspend** functions, and a mocked suspend function cannot be made to return — not
+ * with `doNothing()` ("Only void methods can doNothing()!"), and not with
+ * `whenever(x.start())`, which registers a stub on a *new* state machine and leaves the
+ * caller's continuation suspended. A test that opens the microphone with a mock therefore
+ * spins forever. There is no microphone behind this class in a unit test, so faking the
+ * whole object (see `FakeAudioCaptureSource`) is both simpler and correct.
+ */
+open class AudioCaptureSource @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val _frames = MutableSharedFlow<ShortArray>(extraBufferCapacity = 4)
-    val frames: SharedFlow<ShortArray> = _frames.asSharedFlow()
+
+    /**
+     * The audio frames. `open` so a test fake can substitute its own flow: the property is
+     * read by the integrator, and there is no setter to stub through.
+     */
+    open val frames: SharedFlow<ShortArray> = _frames.asSharedFlow()
 
     private val _errors = MutableSharedFlow<Throwable>(extraBufferCapacity = 1)
     val errors: SharedFlow<Throwable> = _errors.asSharedFlow()
@@ -64,7 +80,7 @@ class AudioCaptureSource @Inject constructor(
     @Volatile private var recorder: AudioRecord? = null
     private var captureJob: Job? = null
 
-    suspend fun start() = lifecycleMutex.withLock {
+    open suspend fun start() = lifecycleMutex.withLock {
         if (captureJob?.isActive == true) return@withLock
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) !=
             PackageManager.PERMISSION_GRANTED
@@ -161,7 +177,7 @@ class AudioCaptureSource @Inject constructor(
         }
     }
 
-    suspend fun stop() = lifecycleMutex.withLock {
+    open suspend fun stop() = lifecycleMutex.withLock {
         val activeJob = captureJob
         val activeRecorder = recorder
         captureJob = null

@@ -1,6 +1,7 @@
 package com.example.voiceassistant.wake
 
 import com.example.voiceassistant.stt.AudioCaptureSource
+import com.example.voiceassistant.stt.FakeAudioCaptureSource
 import com.example.voiceassistant.stt.OfflineSttIntegrator
 import com.example.voiceassistant.stt.SherpaOnnxModelStore
 import com.example.voiceassistant.stt.SttEngine
@@ -16,11 +17,10 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.After
 import org.junit.Test
-import org.mockito.kotlin.any
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 import org.mockito.kotlin.mock
-import org.mockito.kotlin.never
-import org.mockito.kotlin.verify
-import org.mockito.kotlin.whenever
 
 /**
  * The hands-free loop, driven by a fake recogniser: no microphone, no model, no playback.
@@ -37,6 +37,11 @@ import org.mockito.kotlin.whenever
  *  5. the wake window closes on its own, so the chip in the UI cannot lie about it.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
+// Robolectric is only here for the fake microphone: `FakeAudioCaptureSource` extends the
+// real `AudioCaptureSource`, whose constructor wants a `Context`. It never touches
+// `AudioRecord`, so nothing audio-related runs.
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [33])
 class ContinuousWakeControllerTest {
 
     private class RecordingCallbacks : ContinuousWakeController.Callbacks {
@@ -118,25 +123,16 @@ class ContinuousWakeControllerTest {
     }
 
     /**
-     * A fake capture source with working `start()`/`stop()`.
+     * The fake microphone.
      *
-     * These two are **suspend** functions. A bare `mock()` answers a suspend call with
-     * `null` instead of an already-completed `Continuation`, so the coroutine that called
-     * `capture.start()` suspends forever and the test JVM hangs with no output. Stubbing
-     * them here — once, for every test in this class — is why the suite terminates.
+     * See [FakeAudioCaptureSource] for why this is a real object and not a Mockito mock:
+     * `start()`/`stop()` are suspend functions, and a mocked suspend function cannot be
+     * made to resume its caller, which used to hang the whole test JVM.
+     *
+     * [startError] makes `start()` fail the way a busy microphone does.
      */
-    private fun fakeCapture(startError: Throwable? = null): AudioCaptureSource {
-        val capture = mock<AudioCaptureSource>()
-        if (startError == null) {
-            stubSuspendingVoid { capture.start() }
-        } else {
-            // The failing-start case: `start()` throws instead of returning, which is how
-            // the controller sees "microphone busy".
-            stubSuspendingThrow(startError) { capture.start() }
-        }
-        stubSuspendingVoid { capture.stop() }
-        return capture
-    }
+    private fun fakeCapture(startError: Throwable? = null): FakeAudioCaptureSource =
+        FakeAudioCaptureSource().apply { this.startError = startError }
 
     private fun realIntegrator(scope: TestScope): OfflineSttIntegrator {
         val engine = mock<SttEngine>()
@@ -155,24 +151,6 @@ class ContinuousWakeControllerTest {
         return integrator
     }
 
-    /**
-     * Stubs a **suspend** `Unit` function so the call returns immediately.
-     *
-     * `doNothing()` cannot be used here: Mockito sees a suspend function as a real method
-     * with a `Continuation` parameter and a non-void (`Any?`) return type, so it rejects
-     * it with "Only void methods can doNothing()!". `whenever(x.foo())` inside an
-     * `runBlocking` block is the supported spelling — the call runs, the returned
-     * continuation is recorded as the stub, and a later call resumes it straight away.
-     */
-    private fun stubSuspendingVoid(call: suspend () -> Unit) {
-        runBlocking { whenever(call()).thenReturn(Unit) }
-    }
-
-    /** Same, for the call that must fail. */
-    private fun stubSuspendingThrow(error: Throwable, call: suspend () -> Unit) {
-        runBlocking { whenever(call()).thenThrow(error) }
-    }
-
     @Test
     fun `start opens the microphone and the recogniser together`() = runTest {
         val capture = fakeCapture()
@@ -182,7 +160,8 @@ class ContinuousWakeControllerTest {
         assertTrue(controller.start(RecordingCallbacks()))
 
         assertTrue(controller.isListening)
-        verify(capture).start()
+        assertEquals("the microphone must be opened", 1, capture.startCalls)
+        assertTrue(capture.isStarted)
         assertTrue("the recogniser must run whenever the mic is open", integrator.isTranscribingNow)
         assertEquals(WakeState.STANDBY, controller.state.value)
     }
@@ -327,7 +306,8 @@ class ContinuousWakeControllerTest {
         assertFalse(controller.isArmed())
         assertFalse(integrator.isTranscribingNow)
         assertEquals(WakeState.OFF, controller.state.value)
-        verify(capture).stop()
+        assertEquals("the microphone must be released", 1, capture.stopCalls)
+        assertFalse(capture.isStarted)
     }
 
     @Test
@@ -404,7 +384,7 @@ class ContinuousWakeControllerTest {
 
         controller.onFinalTranscript("shaz")
 
-        verify(callbacks, never()).onWakeAcknowledged()
+        assertEquals("a partial must never wake the assistant", 0, callbacks.wakes.size)
         assertTrue("shaz must not tear down the microphone", controller.isListening)
         assertEquals(1, callbacks.interrupts)
     }

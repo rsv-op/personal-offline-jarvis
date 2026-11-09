@@ -144,10 +144,13 @@ android {
             // Robolectric + Compose needs a bigger heap than the 512 MB default;
             // without it the GC thrashes and a slow suite can look like a hang.
             test.maxHeapSize = "2g"
-            // A forked JVM per class costs a little startup time and buys full
-            // isolation: one wedged composition cannot take the rest of the suite
-            // down with it, and a class that dies leaves the others' results intact.
-            test.forkEvery = 1
+            // `forkEvery = 1` was added while chasing the hang, and it backfired: a
+            // fresh JVM per test class means Robolectric re-extracts the android-all
+            // jar and re-runs its instrumentation for each of the six Robolectric
+            // classes, which on a 2-core CI runner costs more than the tests
+            // themselves and pushed the step past its timeout. One fork (the default)
+            // is fine now that no test can wedge the others — the suspend-mock bug
+            // that caused the hangs is gone, not merely hidden behind a timeout.
         }
     }
 
